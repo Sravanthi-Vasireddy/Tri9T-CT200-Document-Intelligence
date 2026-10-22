@@ -205,11 +205,13 @@ where $S$ is the referenced document section. If a section is removed in a futur
 
 - **Step 1**: Environment verification, PDF deep inspection, structural irregularity documentation, repository scaffolding, git initialization, and architecture blueprint.
 - **Step 2 (Completed)**: Robust PDF parser implementation using PyMuPDF (layout analysis, table extraction, section tree reconstruction, cross-page stitching, validation suite).
-- **Step 3**: Data models, SQLite ORM schemas, and JSON document store integration.
-- **Step 4**: Versioning and diff engine (AST-based semantic and hash comparison).
+- **Step 1**: Environment verification, PDF deep inspection, structural irregularity documentation, repository scaffolding, git initialization, and architecture blueprint.
+- **Step 2 (Completed)**: Robust PDF parser implementation using PyMuPDF (layout analysis, table extraction, section tree reconstruction, cross-page stitching, validation suite).
+- **Step 3 (Completed)**: Database design (SQLite + SQLAlchemy), document versioning, cross-version diff engine, and transactional ingestion CLI.
+- **Step 4**: Versioning browse APIs and diff reporting endpoints.
 - **Step 5**: LLM QA test case generation service with prompt engineering and Pydantic validation.
 - **Step 6**: Automated staleness detection engine and dependency graph.
-- **Step 7**: FastAPI endpoints, integration test suite (`pytest`), and complete verification.
+- **Step 7**: Complete FastAPI integration, end-to-end verification, and documentation.
 
 ---
 
@@ -235,4 +237,87 @@ During the implementation and automated tree validation of the CT-200 parser, th
 
 ### 8.5 Scope of OCR Fallback
 - **Limitation**: Both `ct200_manual.pdf` and `ct200_manual_v2.pdf` are 100% vector-rendered PDFs with complete text layers and zero bitmap images. Native vector layout parsing runs deterministically with 1.0 confidence and 0 uncertain nodes. While an OCR fallback path is structured in `CT200PDFParser.perform_ocr_fallback()`, it requires system-level Tesseract binaries if applied to third-party scanned PDFs in the future.
+
+---
+
+## 9. Database Architecture, Cross-Version Matching Strategy, and Known Limitations
+
+### 9.1 Relational Database Schema & Foreign Key Integrity
+The database architecture uses SQLite (`tri9t_doc_intel.db`) managed via SQLAlchemy 2.0 ORM:
+
+```mermaid
+erDiagram
+    DOCUMENTS ||--o{ DOCUMENT_VERSIONS : "has versions"
+    DOCUMENT_VERSIONS ||--o{ DOCUMENT_NODES : "contains nodes"
+
+    DOCUMENTS {
+        string id PK
+        string name
+        text description
+        datetime created_at
+        datetime updated_at
+    }
+
+    DOCUMENT_VERSIONS {
+        string id PK
+        string document_id FK
+        string version_number
+        string source_filename
+        string file_hash
+        int total_pages
+        int total_nodes
+        string root_node_id
+        datetime ingested_at
+        text diff_summary_json
+        text metadata_json
+    }
+
+    DOCUMENT_NODES {
+        string id PK
+        string version_id FK
+        string logical_key
+        string node_type
+        text title_or_text
+        string section_number
+        int hierarchy_level
+        string parent_id
+        int reading_order_index
+        int page_start
+        int page_end
+        string content_hash
+        float extraction_confidence
+        boolean is_uncertain
+        text children_ids_json
+        text table_data_json
+        text metadata_json
+    }
+```
+
+- **Historical Immutability**: Version 1 is preserved permanently when Version 2 is ingested. Each node has a version-scoped primary key (`id`), allowing historical test cases and audit logs to resolve to the exact text of past revisions.
+- **Indexes**: Composite indexes on `(document_id, file_hash)`, `(version_id, logical_key)`, and `(version_id, reading_order_index)` ensure $O(1)$ lookups for version matching and deduplication.
+
+### 9.2 Cross-Version Matching Strategy
+The matching engine (`app/versioning.py`) compares nodes across versions using a multi-pass hierarchical approach:
+1. **Root Node**: Matched via `doc_root`.
+2. **Section Nodes**:
+   - Matched primarily by canonical `section_number` (`1`, `2.1`, `2.1.1.1`, `3.4`, `3.3`, etc.).
+   - Disambiguated by **parent logical key** (e.g. `4.2 Error Codes` under `sec_4` vs `7.1 Error Codes` under `sec_7`).
+   - If `content_hash` matches $\rightarrow$ `UNCHANGED`.
+   - If `content_hash` differs $\rightarrow$ `CHANGED`. Crucially, a changed hash does **not** create a new logical key; it preserves the stable logical key (`sec_2.1.1.1`, `sec_3.2`, `sec_4.2`, etc.) while noting the delta.
+   - If section number exists only in current version (e.g. `5.3`) $\rightarrow$ `ADDED`.
+   - If section number exists only in prior version $\rightarrow$ `REMOVED`.
+3. **Content Nodes (Tables, Lists, Paragraphs)**:
+   - Matched within their matched parent section context.
+   - Exact hash matches are paired first (`UNCHANGED`).
+   - Remaining sibling paragraphs under the same parent section are matched by sequence position, retaining stable logical identity (`CHANGED`).
+   - Unpaired content in new branches is marked `ADDED`.
+
+### 9.3 Ingestion Idempotency & Rollback Guarantees
+- **Binary Hash Deduplication**: The SHA-256 of the physical PDF binary is stored in `DocumentVersion.file_hash`. If the ingestion command is executed again with an identical file, the service detects the match and immediately returns the existing version summary without creating redundant rows.
+- **Atomic Transactions**: Ingestion executes inside a database transaction (`db.begin()` / `db.commit()`). If any parser failure, schema violation, or unhandled exception occurs, `db.rollback()` executes, leaving the database completely clean.
+
+### 9.4 Known Matching Limitations
+1. **Unnumbered Structural Re-parenting**: If an unnumbered paragraph is moved across sections without preserving any text similarity, the matcher will treat it as a deletion in the old section and an addition in the new section rather than a move.
+2. **Simultaneous Multi-Paragraph Insertions & Edits**: In subsections containing 5+ paragraphs where sentences are shuffled, deleted, and added simultaneously, position-based pairing may misalign edited paragraphs with newly added paragraphs. For such complex scenarios, semantic vector embeddings or Levenshtein token distance can be introduced in future iterations.
+
 

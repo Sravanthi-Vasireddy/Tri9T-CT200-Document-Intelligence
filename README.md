@@ -150,7 +150,7 @@ The test suite validates parser correctness, tree integrity, anomaly detection, 
 pytest -v tests/test_parser.py
 ```
 
-### Verified Test Cases
+### Verified Parser Test Cases
 1. `test_out_of_order_sections`: Verifies Section 3.4 precedes Section 3.3 in physical reading order while both retain correct canonical parentage (`Section 3`).
 2. `test_missing_intermediate_subsection_numbering`: Verifies Section 2.1.1.1 attaches directly under Section 2.1 without fabricating non-existent Section 2.1.1.
 3. `test_duplicate_headings_with_distinct_node_ids`: Verifies distinct node IDs and logical keys for identical heading titles (Section 4.2 vs Section 7.1 "Error Codes").
@@ -158,4 +158,38 @@ pytest -v tests/test_parser.py
 5. `test_content_hash_changes_on_meaningful_diff`: Verifies hash stability on unchanged sections (1.1) and hash changes on modified sections (2.1.1.1, 3.2, 4.2, 4.3) and new section 5.3.
 6. `test_cross_page_paragraph_continuation`: Verifies cross-page text stitching across page boundaries (e.g., Section 3.1, Section 4.3, Section 6.1, Section 8.1).
 7. `test_tree_validation_and_anomaly_detection`: Verifies `DocumentTreeValidator` passes valid trees and catches anomalies (orphan nodes, cycles, missing parents).
+
+---
+
+## 9. Database Ingestion & Version Management
+
+The system persists document versions in SQLite (`tri9t_doc_intel.db`) via SQLAlchemy ORM models:
+- **`Document`**: Master technical document registry.
+- **`DocumentVersion`**: Versioned snapshots (`v1`, `v2`) with source filename, page counts, node counts, and binary `file_hash` for deduplication.
+- **`DocumentNodeModel`**: Granular nodes holding `logical_key`, version-specific `id`, hierarchy level, parent ID, reading order, coordinates, table JSON, and content hash.
+
+### Ingestion CLI
+To ingest both V1 and V2 into SQLite and compute structural diffs:
+
+```bash
+# Execute transactional ingestion
+python scripts/ingest_documents.py
+```
+
+- **Deduplication & Idempotency**: Running `python scripts/ingest_documents.py` a second time uses SHA-256 `file_hash` to detect that both versions are already stored, returning existing records in milliseconds without inserting duplicate rows.
+- **Transactional Rollback**: Ingestion runs inside a strict database transaction. If parsing, validation, or foreign-key constraints fail, the session issues `db.rollback()`, ensuring no partial versions or orphan nodes are written.
+
+### Database Test Suite
+To run all database, versioning, diff, and rollback tests:
+
+```bash
+pytest -v tests/test_database.py
+```
+
+### Complete Test Suite (Parser + Database)
+```bash
+pytest -v
+```
+*(All 15 tests pass).*
+
 

@@ -65,3 +65,41 @@ class ValidationResult(BaseModel):
     errors: List[str] = Field(default_factory=list, description="Fatal consistency or structural errors")
     warnings: List[str] = Field(default_factory=list, description="Non-fatal warnings or flags")
     stats: Dict[str, Any] = Field(default_factory=dict, description="Structural statistics (node counts, table counts, etc.)")
+
+
+class NodeChangeStatus(str, Enum):
+    UNCHANGED = "unchanged"
+    CHANGED = "changed"
+    ADDED = "added"
+    REMOVED = "removed"
+    AMBIGUOUS = "ambiguous"
+
+
+class NodeMatch(BaseModel):
+    logical_key: str
+    status: NodeChangeStatus
+    prev_node_id: Optional[str] = None
+    curr_node_id: Optional[str] = None
+    prev_hash: Optional[str] = None
+    curr_hash: Optional[str] = None
+    node_type: str
+    title_or_text: str
+    details: Optional[str] = None
+
+
+class IngestionSummary(BaseModel):
+    version_id: str
+    version_number: str
+    document_id: str
+    source_filename: str
+    file_hash: str
+    total_pages: int
+    total_nodes: int
+    added_nodes: int = 0
+    removed_nodes: int = 0
+    changed_nodes: int = 0
+    unchanged_nodes: int = 0
+    ambiguous_matches: int = 0
+    already_ingested: bool = False
+    diff_details: List[NodeMatch] = Field(default_factory=list)
+
