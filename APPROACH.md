@@ -411,5 +411,42 @@ A critical requirement in regulated medical device documentation is historical a
 - Pre-existing selections continue pointing directly to their immutable `v1_...` node records.
 - Automated test `test_ingesting_v2_after_selection_preserves_v1_selection` explicitly verifies this guarantee: a selection created under V1 continues resolving to `"300 measurement cycles"` and `"15%"` even after V2 is ingested into the database.
 
+---
+
+## 12. LLM-Powered QA Test Case Generation & Grounding Engine
+
+### 12.1 Provider-Agnostic LLM Architecture & Zero-Secret Leakage
+The generation service (`app/llm/generator.py` and `app/llm/provider.py`) abstracts model interactions behind `BaseLLMProvider`.
+- **Supported Providers**: `openai` (works with OpenAI, OpenRouter, Groq, Ollama via `LLM_BASE_URL`), and `mock` (deterministic, grounded offline generator for CI and automated test verification without API costs or external network dependencies).
+- **Security Posture**: API keys are read exclusively from environment variables (`LLM_API_KEY`). They are never logged, echoed in response payloads, or included in persistent document store artifacts. Exceptions sanitize provider responses into safe client messages.
+
+### 12.2 Strict Grounding & Anti-Hallucination Controls
+Generating QA test cases for regulated medical devices requires strict grounding:
+1. **Source Node Grounding**: Each generated test case must cite `source_node_ids` that are a strict subset of the selection's node IDs. The validator actively rejects test cases citing unselected or invented node IDs.
+2. **Exact Numerical Fidelity**: The prompt requires the LLM to preserve numbers, units, inequalities, and negative clauses verbatim (e.g. V1: 300 cycles, 15%; V2: 250 cycles, 10%; 0 to 299 mmHg, ±3 mmHg).
+3. **Explicit Ambiguity Flags**: If requirements are underspecified, the model is instructed to populate the `ambiguities_or_flags` field rather than fabricating device behavior.
+
+### 12.3 Structured-Output Validation & Bounded Single-Repair Strategy
+Output validation (`QATestGeneratorService.validate_test_cases_payload`) enforces:
+- Root dictionary structure with `test_cases` array.
+- Strict bounds: $3 \le \text{count} \le 5$.
+- Pydantic schema validation for all fields (`id`, `title`, `objective`, `test_steps`, `expected_result`, `priority`).
+- **Bounded Repair**: If an initial response violates JSON syntax or schema rules, the engine triggers **exactly one** repair attempt by feeding the specific validation error back to the model. If repair succeeds, `validation_status` is marked `"repaired"`. If repair fails, the process immediately raises HTTP 502 with diagnostic details rather than looping indefinitely or hanging.
+
+### 12.4 Deterministic Duplicate-Generation Caching
+To optimize latency and cost:
+- An SHA-256 `input_hash` is computed from `f"{selection_id}:{version_id}:{prompt_version}:{model}:{sorted_node_ids_and_hashes}"`.
+- When `force_regenerate=False` (default), the service queries `JSONTestStore.find_by_input_hash()`. If an identical generation exists, it is returned in milliseconds with `cached=True`.
+- When `force_regenerate=True`, the cache is bypassed and fresh LLM generation is executed.
+
+### 12.5 Persistent JSON Document Store & Lifelong Auditability
+Generations are stored in `generated/test_generations/gen_{generation_id}.json` containing:
+- Complete test cases with priorities, preconditions, steps, and expected outcomes.
+- Exact source version, version-specific node IDs, and logical keys.
+- Immutable source text snapshots at generation time.
+- Input hash, prompt version (`1.0.0`), and validation status.
+This enables subsequent tasks (e.g., test case staleness detection) to inspect both current and historical test definitions independently of database changes.
+
+
 
 

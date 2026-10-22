@@ -257,4 +257,65 @@ class SelectionListResponse(BaseModel):
     items: List[SelectionSummaryResponse]
 
 
+# --- QA Test Generation Schemas ---
+
+class PriorityEnum(str, Enum):
+    CRITICAL = "critical"
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class GeneratedTestCase(BaseModel):
+    id: str = Field(..., description="Stable test case identifier (e.g. 'TC-CT200-001')")
+    title: str = Field(..., description="Actionable, descriptive test case title")
+    objective: str = Field(..., description="Specific device behavior or requirement being verified")
+    preconditions: List[str] = Field(default_factory=list, description="Initial device and operational conditions")
+    test_steps: List[str] = Field(..., min_length=1, description="Sequential, verifiable execution steps")
+    expected_result: str = Field(..., description="Measurable, verifiable outcome strictly grounded in source text")
+    priority: PriorityEnum = Field(..., description="Priority: critical, high, medium, low")
+    source_node_ids: List[str] = Field(..., min_length=1, description="Exact source node IDs substantiating this test case")
+    source_version_identifiers: List[str] = Field(default_factory=list, description="Version identifiers (e.g. ['v1'])")
+    source_content_hashes: Dict[str, str] = Field(default_factory=dict, description="Mapping of node ID to source content hash")
+    requirement_coverage: str = Field(..., description="Rationale or specific clause coverage")
+    ambiguities_or_flags: Optional[str] = Field(None, description="Flags for underspecified or ambiguous requirements")
+
+
+class LLMTestCasesPayload(BaseModel):
+    """Schema expected directly from the LLM JSON response."""
+    test_cases: List[GeneratedTestCase] = Field(..., min_length=3, max_length=5)
+
+
+class SourceTextSnapshot(BaseModel):
+    node_id: str
+    logical_key: str
+    content_hash: str
+    title_or_text: str
+
+
+class GenerationRequest(BaseModel):
+    force_regenerate: bool = Field(False, description="Force fresh LLM generation bypassing cached result")
+    additional_instructions: Optional[str] = Field(None, description="Optional extra QA focus instructions")
+
+
+class GenerationRecordResponse(BaseModel):
+    generation_id: str
+    selection_id: str
+    document_id: str
+    version_id: str
+    version_number: str
+    provider: str
+    model: str
+    prompt_version: str
+    input_hash: str
+    generated_at: str
+    cached: bool = False
+    validation_status: str
+    total_test_cases: int
+    test_cases: List[GeneratedTestCase]
+    source_node_ids: List[str]
+    source_text_snapshots: List[SourceTextSnapshot] = Field(default_factory=list)
+
+
+
 

@@ -458,16 +458,90 @@ Lists existing selections with pagination and ordering.
 curl -X GET "http://localhost:8000/api/selections?limit=10&offset=0"
 ```
 
-**Selection Integrity & Policies**:
-- **Single-Version Pinning**: All nodes in a selection must belong to the exact same document version. Mixed-version selections are rejected with `HTTP 400 Bad Request`.
-- **Deduplication**: Duplicate node IDs in the request are rejected with `HTTP 400 Bad Request` to prevent ambiguous ordering.
-- **Historical Immutability**: Selections snapshot the exact node content and content hash at creation time. Ingesting subsequent versions (e.g., V2) will never modify, delete, or repoint existing V1 selection items.
+#### 10. Generate QA Test Cases (LLM-Powered)
+Reconstructs exact version-pinned source text from the selection, validates grounding, and generates 3–5 structured, verifiable QA test cases.
+```bash
+curl -X POST "http://localhost:8000/api/selections/sel_a1b2c3d4e5f6/generate" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "force_regenerate": false
+  }'
+```
+**Response (200 OK)**:
+```json
+{
+  "generation_id": "gen_f8c12a39d4e5",
+  "selection_id": "sel_a1b2c3d4e5f6",
+  "document_id": "ct200_manual",
+  "version_id": "ct200_manual_v1",
+  "version_number": "v1",
+  "provider": "mock",
+  "model": "mock-ct200-qa-v1",
+  "prompt_version": "1.0.0",
+  "input_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "generated_at": "2026-10-23T00:25:00",
+  "cached": false,
+  "validation_status": "valid",
+  "total_test_cases": 3,
+  "test_cases": [
+    {
+      "id": "TC-CT200-BAT-001",
+      "title": "V1 Typical Battery Life and Low-Battery Threshold Verification",
+      "objective": "Verify that typical battery life delivers approximately 300 measurement cycles and triggers low-battery indicator below 15%.",
+      "preconditions": [
+        "CardioTrack CT-200 unit installed with fresh AAA alkaline batteries",
+        "Simulated measurement rig connected to verify cycle count"
+      ],
+      "test_steps": [
+        "Execute consecutive simulated measurement cycles (3 per day equivalent).",
+        "Monitor battery voltage degradation until 300 cycles are reached.",
+        "Discharge battery cell voltage to 15% remaining capacity."
+      ],
+      "expected_result": "The device completes 300 measurement cycles under normal load, and low-battery warning icon appears exactly when capacity drops below 15%.",
+      "priority": "high",
+      "source_node_ids": ["v1_sec_2_1_1_1_p_5"],
+      "source_version_identifiers": ["v1"],
+      "source_content_hashes": {
+        "v1_sec_2_1_1_1_p_5": "fc240aa415f36e4f3a9e64e12ec6fe5ff9d10e5aa232a5ffbe365510619a32c2"
+      },
+      "requirement_coverage": "Section 2.1.1.1 (Battery Life Under Typical Use - V1)",
+      "ambiguities_or_flags": null
+    }
+  ],
+  "source_node_ids": ["v1_sec_2_1_1_1_p_5", "v1_sec_2_1_tbl_1"],
+  "source_text_snapshots": [
+    {
+      "node_id": "v1_sec_2_1_1_1_p_5",
+      "logical_key": "sec_2.1.1.1_p_5",
+      "content_hash": "fc240aa415f36e4f3a9e64e12ec6fe5ff9d10e5aa232a5ffbe365510619a32c2",
+      "title_or_text": "Battery life: under typical use (3 measurements per day)..."
+    }
+  ]
+}
+```
+
+#### 11. Retrieve Generated Test Cases
+Retrieve historical test generation suites for a selection or by generation ID from the persistent document store:
+```bash
+# List all test generation runs for a selection
+curl -X GET "http://localhost:8000/api/selections/sel_a1b2c3d4e5f6/test-cases"
+
+# Retrieve specific immutable generation record
+curl -X GET "http://localhost:8000/api/generations/gen_f8c12a39d4e5"
+```
+
+**Generation Policies & Architecture**:
+- **Strict Grounding & Traceability**: Each test case specifies an actionable title, objective, preconditions, test steps, measurable expected result, and exact `source_node_ids`. All `source_node_ids` must belong strictly to the selection (invented or hallucinated node IDs are rejected).
+- **Exact Numeric Preservation**: Numerical values (e.g. 300 cycles / 15% in V1 vs 250 cycles / 10% in V2) and units are preserved with complete fidelity.
+- **Bounded Single Repair Strategy**: If the LLM produces malformed JSON or validation errors, exactly 1 repair attempt is triggered with validation feedback. If the repair fails, a safe HTTP 502 error is returned without exposing API keys or hanging indefinitely.
+- **Duplicate-Generation Caching**: When `force_regenerate=false` (default), the service calculates an SHA-256 `input_hash` of the selection ID, version ID, prompt version, model, and source text snapshots. If a matching successful generation exists, it returns immediately with `cached: true`.
+- **Immutable JSON Document Store**: Generated records, along with immutable source text snapshots, are persisted in `generated/test_generations/gen_{id}.json` for lifelong auditability.
 
 ---
 
 ## 11. Automated Test Suite
 
-The test suite consists of 34 comprehensive tests across parsing, database versioning, REST API, and named selection layers:
+The test suite consists of 43 comprehensive tests across parsing, database versioning, REST API, named selection, and LLM QA generation layers:
 ```bash
 pytest -v
 ```
@@ -476,5 +550,6 @@ pytest -v
 - **`tests/test_database.py` (8 tests)**: V1/V2 ingestion, immutable preservation of V1, unchanged/modified node detection, added/removed nodes, hash deduplication, and transactional rollback.
 - **`tests/test_api.py` (10 tests)**: `/health` DB connectivity check, version listing, section listing with version defaults, exact versioned node retrieval, search across headings/body with type/version filters, cross-version change comparison, removed/ambiguous node handling, and input validation / edge cases.
 - **`tests/test_selections.py` (9 tests)**: Named selection creation/retrieval, exact version-pinned content resolution (V1 300 cycles vs V2 250 cycles), post-ingestion immutability (V2 ingestion preserves pre-existing V1 selection), 404 on unknown node IDs, 400 on empty selections/invalid names, duplicate node rejection, mixed-version rejection, transaction rollback, pagination, and 404 on missing selection IDs.
+- **`tests/test_generation.py` (9 tests)**: LLM test case generation from selection, strict version-pinned grounding (V1 300 cycles vs V2 250 cycles), duplicate generation caching (`cached=True`) vs `force_regenerate=True`, 404 on unknown selections, rejection of hallucinated source node IDs, rejection of out-of-bounds test case counts (<3 or >5), bounded single repair recovery on malformed output, safe 502 handling on repair exhaustion, and JSON document store auditability with immutable source text snapshots.
 
 

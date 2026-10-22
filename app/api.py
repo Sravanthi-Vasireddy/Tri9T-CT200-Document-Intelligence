@@ -19,8 +19,14 @@ from app.schemas import (
     SelectionDetailResponse,
     SelectionSummaryResponse,
     SelectionListResponse,
-    SelectionItemDetailResponse
+    SelectionItemDetailResponse,
+    GenerationRequest,
+    GenerationRecordResponse,
+    GeneratedTestCase,
+    SourceTextSnapshot
 )
+from app.llm.generator import QATestGeneratorService
+from app.llm.store import JSONTestStore
 
 router = APIRouter(prefix="/api", tags=["Document Intelligence"])
 
@@ -673,4 +679,107 @@ def list_selections(
         offset=offset,
         items=items
     )
+
+
+# ---------------------------------------------------------
+# 8. QA Test Generation Endpoints
+# ---------------------------------------------------------
+
+@router.post(
+    "/selections/{selection_id}/generate",
+    response_model=GenerationRecordResponse,
+    summary="Generate grounded QA test cases from a version-pinned selection"
+)
+def generate_qa_test_cases(
+    selection_id: str,
+    payload: Optional[GenerationRequest] = None,
+    db: Session = Depends(get_db)
+):
+    force_regen = payload.force_regenerate if payload else False
+    add_instructions = payload.additional_instructions if payload else None
+
+    service = QATestGeneratorService()
+    return service.generate_for_selection(
+        selection_id=selection_id,
+        force_regenerate=force_regen,
+        additional_instructions=add_instructions,
+        db=db
+    )
+
+
+@router.get(
+    "/selections/{selection_id}/test-cases",
+    response_model=List[GenerationRecordResponse],
+    summary="Retrieve all generated test suites for a selection"
+)
+def get_selection_test_cases(
+    selection_id: str,
+    db: Session = Depends(get_db)
+):
+    # Verify selection exists
+    selection = db.query(Selection).filter(Selection.id == selection_id).first()
+    if not selection:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Selection '{selection_id}' not found."
+        )
+
+    store = JSONTestStore()
+    records = store.list_by_selection(selection_id)
+    return [
+        GenerationRecordResponse(
+            generation_id=r["generation_id"],
+            selection_id=r["selection_id"],
+            document_id=r["document_id"],
+            version_id=r["version_id"],
+            version_number=r["version_number"],
+            provider=r["provider"],
+            model=r["model"],
+            prompt_version=r["prompt_version"],
+            input_hash=r["input_hash"],
+            generated_at=r["generated_at"],
+            cached=True,
+            validation_status=r.get("validation_status", "valid"),
+            total_test_cases=len(r.get("test_cases", [])),
+            test_cases=[GeneratedTestCase(**tc) for tc in r.get("test_cases", [])],
+            source_node_ids=r.get("source_node_ids", []),
+            source_text_snapshots=[SourceTextSnapshot(**s) for s in r.get("source_text_snapshots", [])]
+        )
+        for r in records
+    ]
+
+
+@router.get(
+    "/generations/{generation_id}",
+    response_model=GenerationRecordResponse,
+    summary="Retrieve an immutable test generation record by ID"
+)
+def get_generation_record(generation_id: str):
+    store = JSONTestStore()
+    r = store.get_generation(generation_id)
+    if not r:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Generation record '{generation_id}' not found."
+        )
+
+    return GenerationRecordResponse(
+        generation_id=r["generation_id"],
+        selection_id=r["selection_id"],
+        document_id=r["document_id"],
+        version_id=r["version_id"],
+        version_number=r["version_number"],
+        provider=r["provider"],
+        model=r["model"],
+        prompt_version=r["prompt_version"],
+        input_hash=r["input_hash"],
+        generated_at=r["generated_at"],
+        cached=True,
+        validation_status=r.get("validation_status", "valid"),
+        total_test_cases=len(r.get("test_cases", [])),
+        test_cases=[GeneratedTestCase(**tc) for tc in r.get("test_cases", [])],
+        source_node_ids=r.get("source_node_ids", []),
+        source_text_snapshots=[SourceTextSnapshot(**s) for s in r.get("source_text_snapshots", [])]
+    )
+
 
