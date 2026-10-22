@@ -372,11 +372,102 @@ curl -X GET "http://localhost:8000/api/nodes/v2_sec_5_3/changes?target_version=1
 }
 ```
 
+#### 7. Create Named Selection (Version-Pinned)
+Creates a named selection containing specific document nodes pinned to their exact document version and content hash. Selections will later be used for QA test case generation.
+```bash
+curl -X POST "http://localhost:8000/api/selections" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Inflation Safety Tests",
+    "description": "Tests for the cuff inflation sequence and pressure safety thresholds",
+    "items": [
+      {"node_id": "v1_sec_3_2"},
+      {"node_id": "v1_sec_2_1_tbl_1"}
+    ]
+  }'
+```
+**Response (201 Created)**:
+```json
+{
+  "id": "sel_a1b2c3d4e5f6",
+  "name": "Inflation Safety Tests",
+  "description": "Tests for the cuff inflation sequence and pressure safety thresholds",
+  "document_id": "ct200_manual",
+  "version_id": "ct200_manual_v1",
+  "version_number": "v1",
+  "created_at": "2026-10-23T00:15:00",
+  "updated_at": "2026-10-23T00:15:00",
+  "total_items": 2,
+  "items": [
+    {
+      "node_id": "v1_sec_3_2",
+      "version_id": "ct200_manual_v1",
+      "version_number": "v1",
+      "logical_key": "sec_3.2",
+      "title_or_text": "3.2. Taking a Measurement...",
+      "node_type": "section",
+      "section_number": "3.2",
+      "hierarchy_level": 2,
+      "content_hash": "b2f67623...",
+      "page_start": 3,
+      "page_end": 3,
+      "parent_id": "v1_sec_3",
+      "parent_details": {
+        "id": "v1_sec_3",
+        "logical_key": "sec_3",
+        "title_or_text": "3. Operating Instructions",
+        "section_number": "3",
+        "node_type": "section"
+      },
+      "table_data": null,
+      "order_index": 0
+    },
+    {
+      "node_id": "v1_sec_2_1_tbl_1",
+      "version_id": "ct200_manual_v1",
+      "version_number": "v1",
+      "logical_key": "sec_2.1_tbl_1",
+      "title_or_text": "[Table with 7 rows, 2 columns]",
+      "node_type": "table",
+      "section_number": "2.1",
+      "hierarchy_level": 2,
+      "content_hash": "c0443425...",
+      "page_start": 2,
+      "page_end": 2,
+      "parent_id": "v1_sec_2_1",
+      "parent_details": null,
+      "table_data": {
+        "headers": ["Parameter", "Value"],
+        "rows": [["Pressure Measurement Range", "0 to 299 mmHg"], ...]
+      },
+      "order_index": 1
+    }
+  ]
+}
+```
+
+#### 8. Retrieve Selection
+Retrieves selection metadata and all items with their exact version-pinned text content and parent hierarchy.
+```bash
+curl -X GET "http://localhost:8000/api/selections/sel_a1b2c3d4e5f6"
+```
+
+#### 9. List Selections
+Lists existing selections with pagination and ordering.
+```bash
+curl -X GET "http://localhost:8000/api/selections?limit=10&offset=0"
+```
+
+**Selection Integrity & Policies**:
+- **Single-Version Pinning**: All nodes in a selection must belong to the exact same document version. Mixed-version selections are rejected with `HTTP 400 Bad Request`.
+- **Deduplication**: Duplicate node IDs in the request are rejected with `HTTP 400 Bad Request` to prevent ambiguous ordering.
+- **Historical Immutability**: Selections snapshot the exact node content and content hash at creation time. Ingesting subsequent versions (e.g., V2) will never modify, delete, or repoint existing V1 selection items.
+
 ---
 
 ## 11. Automated Test Suite
 
-The test suite consists of 25 comprehensive tests across parsing, database versioning, and REST API layers:
+The test suite consists of 34 comprehensive tests across parsing, database versioning, REST API, and named selection layers:
 ```bash
 pytest -v
 ```
@@ -384,5 +475,6 @@ pytest -v
 - **`tests/test_parser.py` (7 tests)**: Structural anomaly handling, non-sequential numbering (3.4 before 3.3), missing intermediate subsections (2.1.1.1), table column/row extraction, cross-page stitching, and tree validation.
 - **`tests/test_database.py` (8 tests)**: V1/V2 ingestion, immutable preservation of V1, unchanged/modified node detection, added/removed nodes, hash deduplication, and transactional rollback.
 - **`tests/test_api.py` (10 tests)**: `/health` DB connectivity check, version listing, section listing with version defaults, exact versioned node retrieval, search across headings/body with type/version filters, cross-version change comparison, removed/ambiguous node handling, and input validation / edge cases.
+- **`tests/test_selections.py` (9 tests)**: Named selection creation/retrieval, exact version-pinned content resolution (V1 300 cycles vs V2 250 cycles), post-ingestion immutability (V2 ingestion preserves pre-existing V1 selection), 404 on unknown node IDs, 400 on empty selections/invalid names, duplicate node rejection, mixed-version rejection, transaction rollback, pagination, and 404 on missing selection IDs.
 
 

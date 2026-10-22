@@ -1,19 +1,25 @@
 import re
 import difflib
+import uuid
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
 from app.database import get_db
-from app.models import Document, DocumentVersion, DocumentNodeModel
+from app.models import Document, DocumentVersion, DocumentNodeModel, Selection, SelectionItem
 from app.schemas import (
     DocumentVersionResponse,
     SectionSummaryResponse,
     NodeDetailResponse,
     SearchResponse,
     SearchResultItem,
-    NodeChangeResponse
+    NodeChangeResponse,
+    SelectionCreate,
+    SelectionDetailResponse,
+    SelectionSummaryResponse,
+    SelectionListResponse,
+    SelectionItemDetailResponse
 )
 
 router = APIRouter(prefix="/api", tags=["Document Intelligence"])
@@ -443,3 +449,228 @@ def compare_node_changes(
             diff_summary=None,
             details=f"Multiple ambiguous candidate nodes ({len(target_candidates)}) found in target version."
         )
+
+
+# ---------------------------------------------------------
+# 7. Selection Endpoints & Helper
+# ---------------------------------------------------------
+
+def build_selection_detail_response(selection: Selection, db: Session) -> SelectionDetailResponse:
+    """Constructs a complete SelectionDetailResponse preserving exact pinned version node content."""
+    items_resp = []
+    for item in selection.items:
+        node = item.node
+        parent_details = None
+        if node and node.parent_id:
+            parent = db.query(DocumentNodeModel).filter(DocumentNodeModel.id == node.parent_id).first()
+            if parent:
+                parent_details = {
+                    "id": parent.id,
+                    "logical_key": parent.logical_key,
+                    "title_or_text": parent.title_or_text,
+                    "section_number": parent.section_number,
+                    "node_type": parent.node_type
+                }
+
+        items_resp.append(
+            SelectionItemDetailResponse(
+                node_id=item.node_id,
+                version_id=item.version_id,
+                version_number=item.version.version_number if item.version else selection.version_number,
+                logical_key=item.logical_key,
+                title_or_text=node.title_or_text if node else "",
+                node_type=node.node_type if node else "unknown",
+                section_number=node.section_number if node else None,
+                hierarchy_level=node.hierarchy_level if node else 0,
+                content_hash=item.content_hash,
+                page_start=node.page_start if node else 0,
+                page_end=node.page_end if node else 0,
+                parent_id=node.parent_id if node else None,
+                parent_details=parent_details,
+                table_data=node.table_data if node else None,
+                order_index=item.order_index
+            )
+        )
+
+    return SelectionDetailResponse(
+        id=selection.id,
+        name=selection.name,
+        description=selection.description,
+        document_id=selection.document_id,
+        version_id=selection.version_id,
+        version_number=selection.version_number,
+        created_at=selection.created_at.isoformat(),
+        updated_at=selection.updated_at.isoformat(),
+        total_items=len(items_resp),
+        items=items_resp
+    )
+
+
+@router.post(
+    "/selections",
+    response_model=SelectionDetailResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a named selection of document nodes pinned to an exact version"
+)
+def create_selection(payload: SelectionCreate, db: Session = Depends(get_db)):
+    # 1. Validate selection name
+    name_clean = payload.name.strip() if payload.name else ""
+    if not name_clean:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Selection name must not be empty or whitespace."
+        )
+
+    # 2. Validate at least one node is provided
+    if not payload.items:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Selection must contain at least one node item."
+        )
+
+    # 3. Validate node IDs and check for duplicates
+    node_ids = []
+    seen_ids = set()
+    for item in payload.items:
+        nid = item.node_id.strip() if item.node_id else ""
+        if not nid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Node ID must not be empty."
+            )
+        if nid in seen_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Duplicate node ID '{nid}' found in request. Each node can only be included once per selection."
+            )
+        seen_ids.add(nid)
+        node_ids.append(nid)
+
+    # 4. Fetch all nodes from database
+    nodes = db.query(DocumentNodeModel).filter(DocumentNodeModel.id.in_(node_ids)).all()
+    nodes_by_id = {n.id: n for n in nodes}
+
+    missing_ids = [nid for nid in node_ids if nid not in nodes_by_id]
+    if missing_ids:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"One or more node IDs were not found: {', '.join(missing_ids)}."
+        )
+
+    # 5. Check all nodes belong to the same document
+    doc_ids = {n.version.document_id for n in nodes if n.version}
+    if len(doc_ids) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="All selected nodes must belong to the same document."
+        )
+    doc_id = list(doc_ids)[0] if doc_ids else ""
+
+    # 6. Reject mixed-version selections
+    version_ids = {n.version_id for n in nodes}
+    if len(version_ids) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mixed-version selections are not permitted. All selected nodes must belong to the same document version."
+        )
+    version_id = list(version_ids)[0]
+    version_number = nodes[0].version.version_number if nodes[0].version else ""
+
+    # 7. Create Selection and SelectionItem records in a transaction
+    selection_id = f"sel_{uuid.uuid4().hex[:12]}"
+    try:
+        selection = Selection(
+            id=selection_id,
+            name=name_clean,
+            description=payload.description.strip() if payload.description else None,
+            document_id=doc_id,
+            version_id=version_id,
+            version_number=version_number
+        )
+        db.add(selection)
+        db.flush()
+
+        for idx, nid in enumerate(node_ids):
+            node = nodes_by_id[nid]
+            item = SelectionItem(
+                selection_id=selection.id,
+                node_id=node.id,
+                version_id=node.version_id,
+                logical_key=node.logical_key,
+                content_hash=node.content_hash,
+                order_index=idx
+            )
+            db.add(item)
+
+        db.commit()
+        db.refresh(selection)
+    except Exception as e:
+        db.rollback()
+        raise e
+
+    return build_selection_detail_response(selection, db)
+
+
+@router.get(
+    "/selections/{selection_id}",
+    response_model=SelectionDetailResponse,
+    summary="Retrieve a selection with its exact version-pinned node content"
+)
+def get_selection(selection_id: str, db: Session = Depends(get_db)):
+    selection = db.query(Selection).filter(Selection.id == selection_id).first()
+    if not selection:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Selection '{selection_id}' not found."
+        )
+    return build_selection_detail_response(selection, db)
+
+
+@router.get(
+    "/selections",
+    response_model=SelectionListResponse,
+    summary="List selections with pagination and deterministic ordering"
+)
+def list_selections(
+    limit: int = Query(20, ge=1, le=100, description="Max selections to return (1-100)"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+    document_id: Optional[str] = Query(None, description="Optional document ID filter"),
+    version: Optional[str] = Query(None, description="Optional version filter ('1', 'v1', '2', 'v2')"),
+    db: Session = Depends(get_db)
+):
+    query = db.query(Selection)
+    if document_id:
+        query = query.filter(Selection.document_id == document_id)
+    if version:
+        v_norm = normalize_version_param(version)
+        query = query.filter(Selection.version_number == v_norm)
+
+    total = query.count()
+    selections = (
+        query.order_by(Selection.created_at.desc(), Selection.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    items = [
+        SelectionSummaryResponse(
+            id=s.id,
+            name=s.name,
+            description=s.description,
+            document_id=s.document_id,
+            version_id=s.version_id,
+            version_number=s.version_number,
+            created_at=s.created_at.isoformat(),
+            total_items=len(s.items)
+        )
+        for s in selections
+    ]
+
+    return SelectionListResponse(
+        total=total,
+        limit=limit,
+        offset=offset,
+        items=items
+    )
+

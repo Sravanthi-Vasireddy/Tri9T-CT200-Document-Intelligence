@@ -36,6 +36,12 @@ class Document(Base):
         cascade="all, delete-orphan",
         order_by="DocumentVersion.ingested_at.asc()"
     )
+    selections = relationship(
+        "Selection",
+        back_populates="document",
+        cascade="all, delete-orphan",
+        order_by="Selection.created_at.desc()"
+    )
 
     def __repr__(self):
         return f"<Document(id='{self.id}', name='{self.name}')>"
@@ -71,6 +77,12 @@ class DocumentVersion(Base):
         back_populates="version",
         cascade="all, delete-orphan",
         order_by="DocumentNodeModel.reading_order_index.asc()"
+    )
+    selections = relationship(
+        "Selection",
+        back_populates="version",
+        cascade="all, delete-orphan",
+        order_by="Selection.created_at.desc()"
     )
 
     @property
@@ -114,6 +126,7 @@ class DocumentNodeModel(Base):
 
     # Relationships
     version = relationship("DocumentVersion", back_populates="nodes")
+    selection_items = relationship("SelectionItem", back_populates="node")
 
     @property
     def children_ids(self) -> List[str]:
@@ -135,3 +148,69 @@ class DocumentNodeModel(Base):
 
     def __repr__(self):
         return f"<DocumentNodeModel(id='{self.id}', type='{self.node_type}', key='{self.logical_key}')>"
+
+
+class Selection(Base):
+    """
+    Represents a user-defined named selection of document nodes pinned to an exact document version.
+    """
+    __tablename__ = "selections"
+
+    id = Column(String(64), primary_key=True)  # e.g. "sel_a1b2c3d4e5f6"
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    document_id = Column(String(64), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    version_id = Column(String(128), ForeignKey("document_versions.id", ondelete="CASCADE"), nullable=False, index=True)
+    version_number = Column(String(32), nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_selection_doc_ver", "document_id", "version_id"),
+        Index("idx_selection_created", "created_at"),
+    )
+
+    # Relationships
+    document = relationship("Document", back_populates="selections")
+    version = relationship("DocumentVersion", back_populates="selections")
+    items = relationship(
+        "SelectionItem",
+        back_populates="selection",
+        cascade="all, delete-orphan",
+        order_by="SelectionItem.order_index.asc()"
+    )
+
+    def __repr__(self):
+        return f"<Selection(id='{self.id}', name='{self.name}', version='{self.version_number}')>"
+
+
+class SelectionItem(Base):
+    """
+    Represents an immutable link between a selection and a specific document node,
+    pinning the exact logical key and content hash at creation time.
+    """
+    __tablename__ = "selection_items"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    selection_id = Column(String(64), ForeignKey("selections.id", ondelete="CASCADE"), nullable=False, index=True)
+    node_id = Column(String(128), ForeignKey("document_nodes.id", ondelete="RESTRICT"), nullable=False, index=True)
+    version_id = Column(String(128), ForeignKey("document_versions.id", ondelete="CASCADE"), nullable=False, index=True)
+    logical_key = Column(String(128), nullable=False, index=True)
+    content_hash = Column(String(64), nullable=False)
+    order_index = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("selection_id", "node_id", name="uq_selection_node"),
+        Index("idx_sel_item_logical", "selection_id", "logical_key"),
+        Index("idx_sel_item_order", "selection_id", "order_index"),
+    )
+
+    # Relationships
+    selection = relationship("Selection", back_populates="items")
+    node = relationship("DocumentNodeModel", back_populates="selection_items")
+    version = relationship("DocumentVersion")
+
+    def __repr__(self):
+        return f"<SelectionItem(sel_id='{self.selection_id}', node_id='{self.node_id}', key='{self.logical_key}')>"
+

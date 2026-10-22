@@ -356,4 +356,60 @@ The node comparison endpoint (`GET /api/nodes/{node_id}/changes`):
 ### 10.5 Testing & Isolation Strategy
 The API test suite (`tests/test_api.py`) runs 10 end-to-end integration tests using FastAPI's `TestClient` over an in-memory SQLite database initialized with `StaticPool`. This isolates test execution from the primary `tri9t_doc_intel.db` file, providing high-speed testing and absolute reproducibility without data corruption.
 
+---
+
+## 11. Version-Pinned Named Selections & Historical Immutability
+
+### 11.1 Purpose of Named Selections
+Named selections bridge document intelligence with downstream automated QA test case generation. Rather than generating tests arbitrarily across entire manuals or losing context when specifications update, QA engineers define named scopes (e.g., *"Inflation Safety Tests"*, *"Error Handling Suite"*). These selections bundle specific sections, paragraphs, or tables pinned permanently to an exact version.
+
+### 11.2 Relational Data Model & Integrity Constraints
+The selection schema consists of two relational tables:
+
+```mermaid
+erDiagram
+    DOCUMENTS ||--o{ SELECTIONS : "owns"
+    DOCUMENT_VERSIONS ||--o{ SELECTIONS : "pins to"
+    SELECTIONS ||--o{ SELECTION_ITEMS : "contains"
+    DOCUMENT_NODES ||--o{ SELECTION_ITEMS : "references"
+
+    SELECTIONS {
+        string id PK
+        string name
+        text description
+        string document_id FK
+        string version_id FK
+        string version_number
+        datetime created_at
+        datetime updated_at
+    }
+
+    SELECTION_ITEMS {
+        int id PK
+        string selection_id FK
+        string node_id FK
+        string version_id FK
+        string logical_key
+        string content_hash
+        int order_index
+        datetime created_at
+    }
+```
+
+- **`node_id` Foreign Key with `RESTRICT`**: `SelectionItem.node_id` references `DocumentNodeModel.id` with `ondelete="RESTRICT"`, mathematically preventing any pinned node from being dropped or orphaned.
+- **Snapshot Content Hash**: At insertion time, `SelectionItem.content_hash` stores a frozen snapshot of the node's `content_hash`. This snapshot enables downstream staleness detection: by comparing the pinned snapshot hash with the latest version's node hash, the staleness engine can definitively flag when a test case's underlying specification has drifted.
+
+### 11.3 Version-Pinning Policies
+1. **Single-Version Pinning**: A selection represents an atomic test suite intended for a specific product release. Allowing mixed-version selections would introduce logical contradictions (e.g. testing both 300 cycles and 250 cycles simultaneously). Therefore, requests mixing nodes across different version IDs are rejected with `HTTP 400 Bad Request`.
+2. **Deterministic Deduplication**: If duplicate node IDs appear in the creation request, the API rejects the request with `HTTP 400 Bad Request` (`Duplicate node ID '{nid}' found in request`), ensuring no ambiguous sequence order.
+3. **Transactional Guarantees**: Creation is atomic (`db.flush()` + `db.commit()` with `try/except: db.rollback()`). If any node is invalid or foreign keys fail, no partial selection records are written.
+
+### 11.4 Historical Immutability Across Subsequent Ingestions
+A critical requirement in regulated medical device documentation is historical auditability:
+- When Version 2 is ingested (`data/ct200_manual_v2.pdf`), it generates new rows with `version_id = ct200_manual_v2` and `id = v2_...`.
+- Existing `ct200_manual_v1` nodes (`id = v1_...`) are completely untouched.
+- Pre-existing selections continue pointing directly to their immutable `v1_...` node records.
+- Automated test `test_ingesting_v2_after_selection_preserves_v1_selection` explicitly verifies this guarantee: a selection created under V1 continues resolving to `"300 measurement cycles"` and `"15%"` even after V2 is ingested into the database.
+
+
 

@@ -196,3 +196,65 @@ class NodeChangeResponse(BaseModel):
     details: Optional[str] = None
 
 
+# --- Selection Schemas ---
+
+class SelectionItemCreate(BaseModel):
+    node_id: str = Field(..., description="Version-specific node ID")
+
+
+class SelectionCreate(BaseModel):
+    name: str = Field(..., description="User-provided selection name")
+    description: Optional[str] = Field(None, description="Optional description of the test selection")
+    items: List[SelectionItemCreate] = Field(..., description="List of nodes to include in selection")
+
+
+class SelectionItemDetailResponse(BaseModel):
+    node_id: str
+    version_id: str
+    version_number: str
+    logical_key: str
+    title_or_text: str
+    node_type: str
+    section_number: Optional[str] = None
+    hierarchy_level: int
+    content_hash: str
+    page_start: int
+    page_end: int
+    parent_id: Optional[str] = None
+    parent_details: Optional[Dict[str, Any]] = None
+    table_data: Optional[Dict[str, Any]] = None
+    order_index: int
+
+
+class SelectionDetailResponse(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    document_id: str
+    version_id: str
+    version_number: str
+    created_at: Any
+    updated_at: Any
+    total_items: int
+    items: List[SelectionItemDetailResponse]
+
+
+class SelectionSummaryResponse(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    document_id: str
+    version_id: str
+    version_number: str
+    created_at: Any
+    total_items: int
+
+
+class SelectionListResponse(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: List[SelectionSummaryResponse]
+
+
+
