@@ -103,3 +103,96 @@ class IngestionSummary(BaseModel):
     already_ingested: bool = False
     diff_details: List[NodeMatch] = Field(default_factory=list)
 
+
+# --- API Endpoint Schemas ---
+
+class HealthResponse(BaseModel):
+    status: str
+    database: str
+    app_name: str
+
+
+class DocumentVersionResponse(BaseModel):
+    id: str
+    document_id: str
+    version_number: str
+    source_filename: str
+    file_hash: str
+    total_pages: int
+    total_nodes: int
+    root_node_id: str
+    ingested_at: Any
+
+
+class SectionSummaryResponse(BaseModel):
+    id: str
+    logical_key: str
+    heading: str
+    section_number: Optional[str] = None
+    node_type: str
+    hierarchy_level: int
+    document_order: int
+    page_start: int
+    page_end: int
+    content_hash: str
+
+
+class NodeDetailResponse(BaseModel):
+    id: str
+    version_id: str
+    version_number: str
+    logical_key: str
+    node_type: str
+    title_or_text: str
+    section_number: Optional[str] = None
+    hierarchy_level: int
+    parent_id: Optional[str] = None
+    parent_details: Optional[Dict[str, Any]] = None
+    children_ids: List[str] = Field(default_factory=list)
+    reading_order_index: int
+    page_start: int
+    page_end: int
+    content_hash: str
+    extraction_confidence: float
+    is_uncertain: bool
+    table_data: Optional[Dict[str, Any]] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class SearchResultItem(BaseModel):
+    node_id: str
+    logical_key: str
+    title_or_text: str
+    snippet: str
+    section_number: Optional[str] = None
+    node_type: str
+    page_start: int
+    page_end: int
+    version_id: str
+    version_number: str
+    content_hash: str
+
+
+class SearchResponse(BaseModel):
+    query: str
+    total_matches: int
+    limit: int
+    offset: int
+    results: List[SearchResultItem]
+
+
+class NodeChangeResponse(BaseModel):
+    source_node_id: str
+    source_version_id: str
+    source_version_number: str
+    target_node_id: Optional[str] = None
+    target_version_id: str
+    target_version_number: str
+    logical_key: str
+    status: str
+    source_content_hash: str
+    target_content_hash: Optional[str] = None
+    diff_summary: Optional[str] = None
+    details: Optional[str] = None
+
+

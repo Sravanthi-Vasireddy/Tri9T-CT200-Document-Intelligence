@@ -320,4 +320,40 @@ The matching engine (`app/versioning.py`) compares nodes across versions using a
 1. **Unnumbered Structural Re-parenting**: If an unnumbered paragraph is moved across sections without preserving any text similarity, the matcher will treat it as a deletion in the old section and an addition in the new section rather than a move.
 2. **Simultaneous Multi-Paragraph Insertions & Edits**: In subsections containing 5+ paragraphs where sentences are shuffled, deleted, and added simultaneously, position-based pairing may misalign edited paragraphs with newly added paragraphs. For such complex scenarios, semantic vector embeddings or Levenshtein token distance can be introduced in future iterations.
 
+---
+
+## 10. FastAPI REST API Architecture, Search Engine & Cross-Version Comparison
+
+### 10.1 Architecture & Safety Principles
+The REST API layer (`app/main.py` and `app/api.py`) exposes the document intelligence engine via standard HTTP/JSON endpoints adhering to strict production standards:
+1. **Information Leakage Prevention**: A global exception handler intercepts unhandled `SQLAlchemyError` and system exceptions, logging details internally while returning sanitized HTTP 500 JSON payloads (`{"detail": "Internal database error occurred. Contact system administrator."}`). Stack traces, table names, and internal credentials are never leaked.
+2. **Pydantic Validation**: All inputs (`limit`, `offset`, `q`, `version`, `type`) and outputs (`HealthResponse`, `DocumentVersionResponse`, `SectionSummaryResponse`, `NodeDetailResponse`, `SearchResponse`, `NodeChangeResponse`) are validated against formal Pydantic v2 schemas.
+3. **Historical Data Integrity**: Retrieval endpoints (`GET /api/nodes/{node_id}`) query directly by version-scoped primary key, ensuring clients receive the exact historical text from that revision rather than substituting latest data.
+
+### 10.2 Parameter Normalization & Defaulting Semantics
+- **Version Normalization**: Query parameters accept either raw numbers or prefixed strings (`"1"` or `"v1"` $\rightarrow$ `"v1"`, `"2"` or `"v2"` $\rightarrow$ `"v2"`).
+- **Latest Version Resolution**: When `version` or `target_version` is omitted, the API dynamically queries the latest version registered under the document (`order_by(DocumentVersion.ingested_at.desc(), DocumentVersion.version_number.desc())`).
+
+### 10.3 Search Engine & Contextual Snippet Extraction
+The search endpoint (`GET /api/search`):
+- **Safe Query Construction**: Built with SQLAlchemy ORM filters (`DocumentNodeModel.title_or_text.ilike(f"%{escaped_term}%")`) rather than string concatenation, eliminating SQL injection vectors.
+- **Multi-Filter Support**: Can filter simultaneously by keyword, node type (`section`, `paragraph`, `table`, `list`), and document version.
+- **Contextual Snippets**: Dynamically extracts a window of ±60 characters surrounding the matching term within the node text, prefixing/suffixing with ellipses (`...`) for clean UI consumption.
+- **Deterministic Pagination**: Results are deterministically ordered by `(DocumentNodeModel.version_id, DocumentNodeModel.reading_order_index)` with configurable `limit` (1–100) and `offset` (≥ 0).
+
+### 10.4 Cross-Version Node Comparison Engine
+The node comparison endpoint (`GET /api/nodes/{node_id}/changes`):
+1. Resolves the source node and its parent document version.
+2. Identifies the target document version (defaulting to the latest version).
+3. If source and target versions match, returns status `unchanged`.
+4. Queries target nodes with the identical `logical_key`.
+   - **Ambiguity Detection**: If multiple nodes share the logical key in the target version, returns status `ambiguous`.
+   - **Removal Detection**: If no target node exists with that key, returns status `removed` (`target_node_id=None`).
+   - **Hash Delta & Diff**: If exactly one target node is found:
+     - Identical content hash $\rightarrow$ `unchanged`.
+     - Divergent content hash $\rightarrow$ `modified`. Generates a concise standard unified diff (`difflib.unified_diff`) showing the exact line-by-line additions and deletions between the source and target node text.
+
+### 10.5 Testing & Isolation Strategy
+The API test suite (`tests/test_api.py`) runs 10 end-to-end integration tests using FastAPI's `TestClient` over an in-memory SQLite database initialized with `StaticPool`. This isolates test execution from the primary `tri9t_doc_intel.db` file, providing high-speed testing and absolute reproducibility without data corruption.
+
 

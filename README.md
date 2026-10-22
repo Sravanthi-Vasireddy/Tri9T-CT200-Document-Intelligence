@@ -190,6 +190,199 @@ pytest -v tests/test_database.py
 ```bash
 pytest -v
 ```
-*(All 15 tests pass).*
+*(All 25 tests pass across parser, database, and API suites).*
+
+---
+
+## 10. FastAPI REST API (Browse, Search & Version Comparison)
+
+The system provides a production-grade REST API built with FastAPI, Pydantic, and SQLAlchemy ORM.
+
+### Starting the Server
+```bash
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+Interactive OpenAPI Swagger docs are available at `http://localhost:8000/docs`.
+
+### API Endpoints & Example cURL Commands
+
+#### 1. Health Check
+Confirm that the application is running and the database connection is healthy.
+```bash
+curl -X GET "http://localhost:8000/health"
+```
+**Response**:
+```json
+{
+  "status": "healthy",
+  "database": "connected",
+  "app_name": "Tri9T-CT200-Document-Intelligence"
+}
+```
+
+#### 2. List Document Versions
+Returns all available versions in chronological order with ingestion timestamp, file hash, page count, and node count.
+```bash
+curl -X GET "http://localhost:8000/api/documents/ct200_manual/versions"
+```
+**Response**:
+```json
+[
+  {
+    "id": "ver_ct200_manual_v1",
+    "version_number": "v1",
+    "source_filename": "data/ct200_manual.pdf",
+    "file_hash": "62bfad94ffc859d9c222ffc322b72fec1ad7c32bfcb432e1858a221f7bcbf6e1",
+    "ingested_at": "2026-10-22T23:54:12",
+    "total_pages": 6,
+    "total_nodes": 50,
+    "root_node_id": "v1_doc_root"
+  },
+  {
+    "id": "ver_ct200_manual_v2",
+    "version_number": "v2",
+    "source_filename": "data/ct200_manual_v2.pdf",
+    "file_hash": "2f40c76dbb3e0fcb243be4df8344e78a666dd9cf16b0dfa9d8fa79247c43315a",
+    "ingested_at": "2026-10-22T23:54:13",
+    "total_pages": 7,
+    "total_nodes": 52,
+    "root_node_id": "v2_doc_root"
+  }
+]
+```
+
+#### 3. List Top-Level Sections
+Return top-level sections (1 through 8) for a requested version (`?version=1` or `?version=v1`). If `version` is omitted, defaults to the latest version (`v2`).
+```bash
+curl -X GET "http://localhost:8000/api/documents/ct200_manual/sections?version=1"
+```
+**Response**:
+```json
+[
+  {
+    "id": "v1_sec_1",
+    "logical_key": "sec_1",
+    "heading": "1. Device Overview",
+    "section_number": "1",
+    "node_type": "section",
+    "reading_order_index": 1,
+    "page_start": 1,
+    "page_end": 1,
+    "content_hash": "a1c51db3f05dbd4e4142f3ae10433efcf9321e102f6ae45ea9bb0c47fc7e1cb4"
+  },
+  ...
+]
+```
+
+#### 4. Retrieve a Specific Node
+Fetches a node's complete stored content, content hash, version details, parent reference, ordered children, page references, and structured table data. Guarantees exact historical version content.
+```bash
+# Retrieve battery specification in V1 (shows 300 cycles, 15%)
+curl -X GET "http://localhost:8000/api/nodes/v1_sec_2_1_1_1_p_5"
+
+# Retrieve structured specifications table in V1
+curl -X GET "http://localhost:8000/api/nodes/v1_sec_2_1_tbl_1"
+```
+**Response (Table Node)**:
+```json
+{
+  "id": "v1_sec_2_1_tbl_1",
+  "version_number": "v1",
+  "logical_key": "sec_2_1_tbl_1",
+  "node_type": "table",
+  "title_or_text": "[Table with 7 rows, 2 columns]",
+  "section_number": "2.1",
+  "hierarchy_level": 2,
+  "parent_id": "v1_sec_2_1",
+  "reading_order_index": 7,
+  "page_start": 2,
+  "page_end": 2,
+  "content_hash": "c0443425b041cf237a7b8e19ff5fb537683fc6e4b9f31c26f634ee0b3b429188",
+  "children_ids": [],
+  "table_data": {
+    "headers": ["Parameter", "Value"],
+    "rows": [
+      ["Pressure Measurement Range", "0 to 299 mmHg"],
+      ["Pulse Rate Range", "40 to 180 beats/min"],
+      ["Pressure Accuracy", "±3 mmHg"],
+      ["Pulse Rate Accuracy", "±5% of reading"],
+      ["Inflation", "Automatic by micro rolling pump"],
+      ["Deflation", "Automatic electronic control valve"],
+      ["Operating Conditions", "+10°C to +40°C, 15% to 85% RH"]
+    ]
+  }
+}
+```
+
+#### 5. Search Document
+Search headings and body text with safe parameterized query building, snippets with context, node-type filtering (`section`, `paragraph`, `table`, `list`), version filtering, and pagination.
+```bash
+# Search for oscillometric technology
+curl -X GET "http://localhost:8000/api/search?q=oscillometric&limit=5&offset=0"
+
+# Search for Error Codes inside tables in Version 1
+curl -X GET "http://localhost:8000/api/search?q=cuff&type=table&version=1"
+```
+**Response**:
+```json
+{
+  "query": "oscillometric",
+  "version_filter": null,
+  "type_filter": null,
+  "total_matches": 2,
+  "limit": 5,
+  "offset": 0,
+  "results": [
+    {
+      "id": "v1_sec_1_1_p_2",
+      "version_number": "v1",
+      "logical_key": "sec_1_1_p_2",
+      "node_type": "paragraph",
+      "title_or_text": "The CT-200 utilizes the oscillometric method of blood pressure measurement...",
+      "section_number": "1.1",
+      "page_start": 1,
+      "page_end": 1,
+      "snippet": "...The CT-200 utilizes the oscillometric method of blood pressure measurement..."
+    }
+  ]
+}
+```
+
+#### 6. Compare Node Status Across Versions
+Compare a version-specific node with its counterpart in a target version (defaults to latest version if omitted). Returns status (`unchanged`, `modified`, `removed`, or `ambiguous`), node IDs, hashes, and a unified diff summary.
+```bash
+# Compare Section 2.1.1.1 (Modified in V2: 300 cycles -> 250 cycles)
+curl -X GET "http://localhost:8000/api/nodes/v1_sec_2_1_1_1/changes?target_version=2"
+
+# Compare Section 5.3 (Added in V2; comparing V2 -> V1 reports removed in V1)
+curl -X GET "http://localhost:8000/api/nodes/v2_sec_5_3/changes?target_version=1"
+```
+**Response (Modified Node)**:
+```json
+{
+  "source_version_number": "v1",
+  "target_version_number": "v2",
+  "source_node_id": "v1_sec_2_1_1_1",
+  "target_node_id": "v2_sec_2_1_1_1",
+  "logical_key": "sec_2_1_1_1",
+  "status": "modified",
+  "source_content_hash": "fc240aa415f36e4f3a9e64e12ec6fe5ff9d10e5aa232a5ffbe365510619a32c2",
+  "target_content_hash": "2ff1a8d052a201b1e5fead848b1d9bf5be8447814b74542ee4ee0ee711149e32",
+  "diff_summary": "--- v1\n+++ v2\n@@ -1,4 +1,4 @@\n-2.1.1.1. Battery Life Under Typical Use (V1: 300 measurement cycles)\n+2.1.1.1. Battery Life Under Typical Use (V2: 250 measurement cycles)"
+}
+```
+
+---
+
+## 11. Automated Test Suite
+
+The test suite consists of 25 comprehensive tests across parsing, database versioning, and REST API layers:
+```bash
+pytest -v
+```
+
+- **`tests/test_parser.py` (7 tests)**: Structural anomaly handling, non-sequential numbering (3.4 before 3.3), missing intermediate subsections (2.1.1.1), table column/row extraction, cross-page stitching, and tree validation.
+- **`tests/test_database.py` (8 tests)**: V1/V2 ingestion, immutable preservation of V1, unchanged/modified node detection, added/removed nodes, hash deduplication, and transactional rollback.
+- **`tests/test_api.py` (10 tests)**: `/health` DB connectivity check, version listing, section listing with version defaults, exact versioned node retrieval, search across headings/body with type/version filters, cross-version change comparison, removed/ambiguous node handling, and input validation / edge cases.
 
 
