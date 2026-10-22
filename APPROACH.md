@@ -203,10 +203,36 @@ where $S$ is the referenced document section. If a section is removed in a futur
 
 ## 7. Phased Implementation Roadmap
 
-- **Step 1 (Current Step)**: Environment verification, PDF deep inspection, structural irregularity documentation, repository scaffolding, git initialization, and architecture blueprint.
-- **Step 2**: Robust PDF parser implementation using PyMuPDF (layout analysis, table extraction, section tree reconstruction, cross-page stitching).
+- **Step 1**: Environment verification, PDF deep inspection, structural irregularity documentation, repository scaffolding, git initialization, and architecture blueprint.
+- **Step 2 (Completed)**: Robust PDF parser implementation using PyMuPDF (layout analysis, table extraction, section tree reconstruction, cross-page stitching, validation suite).
 - **Step 3**: Data models, SQLite ORM schemas, and JSON document store integration.
 - **Step 4**: Versioning and diff engine (AST-based semantic and hash comparison).
 - **Step 5**: LLM QA test case generation service with prompt engineering and Pydantic validation.
 - **Step 6**: Automated staleness detection engine and dependency graph.
 - **Step 7**: FastAPI endpoints, integration test suite (`pytest`), and complete verification.
+
+---
+
+## 8. Empirical Parser Validation Discoveries and Actual Limitations
+
+During the implementation and automated tree validation of the CT-200 parser, the following edge cases, fixes, and architectural boundaries were established:
+
+### 8.1 Bitwise Font Flag Masking (`flags & 16` vs. `flags & 20`)
+- **Discovery**: In PyMuPDF, font flags use bit flags: bit 2 (`4`) denotes Serif, while bit 4 (`16`) denotes Bold. When bold fonts with serifs appear, their flag is `20` (`16 | 4`). Testing `flags & 20` evaluated to non-zero for regular serif text (flag `4`), causing standard non-bold serif body paragraphs to be misclassified as bold headings.
+- **Fix**: The parser strictly masks `bool(flags & 16)` and explicitly verifies font family names (e.g. `"bold" in font.lower()`), ensuring clean separation between headings and body text.
+
+### 8.2 Disambiguation: Ordered Lists vs. Major Section Headings
+- **Discovery**: On Page 3 under Section 3.3, clinical blood pressure criteria are formatted as an ordered list (`1. Normal: ...`, `2. Elevated: ...`, etc.). Because list item 1 begins with `1.`, naive regex matching heading numbers (`r"^\d+\.\s+"`) would collide with Section `1. Device Overview`.
+- **Fix**: The parser executes structured multi-item list detection prior to heading matching. If a block contains multiple sequential numbered items (`1. ...\n2. ...`), it is classified as a `NodeType.LIST` node. This prevents lists from creating spurious section nodes or overwriting primary sections.
+
+### 8.3 Nested Sub-Table Artifact Suppression
+- **Discovery**: PyMuPDF's `find_tables()` detected 7 bounding boxes on Page 2 and 5–7 on Page 4. These were not separate tables, but rather small nested cells and sub-boxes inside the primary specification table and error-code table.
+- **Fix**: A Non-Maximum Suppression / Enclosure algorithm was implemented. Any detected table whose bounding box is geometrically contained within another larger table is pruned. Furthermore, text blocks whose coordinates lie inside primary tables are excluded from standalone paragraph creation, preventing duplicate fragmented text nodes.
+
+### 8.4 Cross-Page Continuation Boundaries
+- **Discovery**: Sections 3.1, 4.3, 6.1, and 8.1 cross page boundaries. For example, Section 4.3 in V2 ends mid-sentence on Page 4 (`"...except for E3"`) and resumes on Page 5 (`"(overpressure), which cannot be silenced for safety reasons."`).
+- **Limitation & Invariant**: The cross-page stitcher checks: (a) whether the previous page ended without terminal punctuation, (b) whether the subsequent page begins with a continuation token (lowercase letter, opening parenthesis, etc.), and (c) whether the active section context is identical. While effective for single-column linear documentation like the CT-200 manual, complex multi-column layouts with sidebars would require spatial column-flow graphs.
+
+### 8.5 Scope of OCR Fallback
+- **Limitation**: Both `ct200_manual.pdf` and `ct200_manual_v2.pdf` are 100% vector-rendered PDFs with complete text layers and zero bitmap images. Native vector layout parsing runs deterministically with 1.0 confidence and 0 uncertain nodes. While an OCR fallback path is structured in `CT200PDFParser.perform_ocr_fallback()`, it requires system-level Tesseract binaries if applied to third-party scanned PDFs in the future.
+

@@ -1,27 +1,19 @@
 # Tri9T-CT200-Document-Intelligence
-# Core backend dependencies
+# Dependencies required for Document Intelligence Parser and Testing
 
-# Web API framework & server
-fastapi>=0.110.0
-uvicorn[standard]>=0.28.0
-
-# Data validation and settings management
-pydantic>=2.6.0
-pydantic-settings>=2.2.0
-python-dotenv>=1.0.0
-
-# Database & ORM
-sqlalchemy>=2.0.25
-
-# Document parsing & layout extraction
+# PDF parsing and layout analysis
 pymupdf>=1.24.0
 
-# HTTP client (for external LLM API calls and test client)
-httpx>=0.27.0
+# Data schemas and validation
+pydantic>=2.6.0
 
-# Testing
+# Testing framework
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
 
-# Optional MongoDB driver (if using MongoDB instead of local JSON store)
-pymongo>=4.6.0
+# Downstream stack dependencies (used in subsequent API and persistence stages)
+fastapi>=0.110.0
+uvicorn[standard]>=0.28.0
+sqlalchemy>=2.0.25
+httpx>=0.27.0
+python-dotenv>=1.0.0

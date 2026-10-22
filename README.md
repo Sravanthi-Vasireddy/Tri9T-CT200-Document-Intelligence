@@ -121,3 +121,41 @@ Our initial inspection revealed several key structural irregularities and docume
    - Brand new Section 5.3 (*Data Export*) added in V2.
 
 See [APPROACH.md](file:///c:/Users/SAI%20KUMAR/Downloads/Tri9T-CT200-Document-Intelligence/APPROACH.md) for full architectural specifications, data models, and implementation plans.
+
+---
+
+## 7. Running the PDF Parser Pipeline
+
+To parse both `ct200_manual.pdf` (Version 1) and `ct200_manual_v2.pdf` (Version 2) and produce validated document trees:
+
+```bash
+# Execute the extraction pipeline
+python scripts/parse_manuals.py
+```
+
+### Generated Artifacts
+The pipeline automatically outputs validated JSON structures to `generated/`:
+- `generated/ct200_manual_v1_tree.json`: Version 1 hierarchical tree (50 nodes, 6 pages, 2 tables, 1 list).
+- `generated/ct200_manual_v2_tree.json`: Version 2 hierarchical tree (52 nodes, 7 pages, 2 tables, 1 list).
+- `generated/validation_report.json`: Comprehensive validation metrics, reciprocity verification, and node counts.
+
+---
+
+## 8. Running the Test Suite
+
+The test suite validates parser correctness, tree integrity, anomaly detection, table preservation, and hash deltas:
+
+```bash
+# Run all tests with verbose output
+pytest -v tests/test_parser.py
+```
+
+### Verified Test Cases
+1. `test_out_of_order_sections`: Verifies Section 3.4 precedes Section 3.3 in physical reading order while both retain correct canonical parentage (`Section 3`).
+2. `test_missing_intermediate_subsection_numbering`: Verifies Section 2.1.1.1 attaches directly under Section 2.1 without fabricating non-existent Section 2.1.1.
+3. `test_duplicate_headings_with_distinct_node_ids`: Verifies distinct node IDs and logical keys for identical heading titles (Section 4.2 vs Section 7.1 "Error Codes").
+4. `test_table_row_and_column_preservation`: Verifies structured 8×2 specifications table and error codes tables (5 rows in V1, 6 rows in V2 with E6 addition).
+5. `test_content_hash_changes_on_meaningful_diff`: Verifies hash stability on unchanged sections (1.1) and hash changes on modified sections (2.1.1.1, 3.2, 4.2, 4.3) and new section 5.3.
+6. `test_cross_page_paragraph_continuation`: Verifies cross-page text stitching across page boundaries (e.g., Section 3.1, Section 4.3, Section 6.1, Section 8.1).
+7. `test_tree_validation_and_anomaly_detection`: Verifies `DocumentTreeValidator` passes valid trees and catches anomalies (orphan nodes, cycles, missing parents).
+
