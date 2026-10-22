@@ -315,6 +315,88 @@ class GenerationRecordResponse(BaseModel):
     test_cases: List[GeneratedTestCase]
     source_node_ids: List[str]
     source_text_snapshots: List[SourceTextSnapshot] = Field(default_factory=list)
+    staleness: Optional[Any] = None
+
+
+# --- Staleness and Impact Analysis Schemas ---
+
+class StalenessStatusEnum(str, Enum):
+    CURRENT = "current"
+    STALE = "stale"
+    REVIEW_REQUIRED = "review_required"
+    UNKNOWN = "unknown"
+
+
+class SourceNodeComparison(BaseModel):
+    node_id: str
+    logical_key: str
+    status: str = Field(..., description="unchanged, modified, removed, ambiguous, review_required")
+    source_version_id: str
+    target_version_id: Optional[str] = None
+    target_node_id: Optional[str] = None
+    source_hash: str
+    target_hash: Optional[str] = None
+    diff_summary: Optional[str] = None
+    potential_high_impact: bool = False
+    impact_reasons: List[str] = Field(default_factory=list)
+    details: str
+
+
+class TestCaseStalenessDetail(BaseModel):
+    test_case_id: str
+    title: str
+    status: StalenessStatusEnum
+    reason: str
+    potential_high_impact: bool = False
+    impact_reasons: List[str] = Field(default_factory=list)
+    referenced_nodes: List[SourceNodeComparison] = Field(default_factory=list)
+
+
+class GenerationStalenessReport(BaseModel):
+    generation_id: str
+    selection_id: str
+    document_id: str
+    source_version_number: str
+    target_version_number: str
+    overall_status: StalenessStatusEnum
+    total_test_cases: int
+    current_count: int
+    stale_count: int
+    review_required_count: int
+    unknown_count: int
+    impact_summary: List[str] = Field(default_factory=list)
+    test_cases: List[TestCaseStalenessDetail]
+    evaluated_at: str
+
+
+class SelectionStalenessSummary(BaseModel):
+    selection_id: str
+    selection_name: str
+    document_id: str
+    source_version_number: str
+    target_version_number: str
+    total_generations: int
+    total_test_cases: int
+    current_count: int
+    stale_count: int
+    review_required_count: int
+    unknown_count: int
+    generation_reports: List[GenerationStalenessReport] = Field(default_factory=list)
+    evaluated_at: str
+
+
+class NodeAssociatedTestCase(BaseModel):
+    test_case_id: str
+    title: str
+    generation_id: str
+    selection_id: str
+    source_version_number: str
+    priority: str
+    staleness_status: str
+    reason: str
+    potential_high_impact: bool = False
+    diff_summary: Optional[str] = None
+
 
 
 

@@ -23,10 +23,14 @@ from app.schemas import (
     GenerationRequest,
     GenerationRecordResponse,
     GeneratedTestCase,
-    SourceTextSnapshot
+    SourceTextSnapshot,
+    GenerationStalenessReport,
+    SelectionStalenessSummary,
+    NodeAssociatedTestCase
 )
 from app.llm.generator import QATestGeneratorService
 from app.llm.store import JSONTestStore
+from app.staleness import StalenessService
 
 router = APIRouter(prefix="/api", tags=["Document Intelligence"])
 
@@ -708,15 +712,19 @@ def generate_qa_test_cases(
 
 
 @router.get(
+    "/selections/{selection_id}/generations",
+    response_model=List[GenerationRecordResponse],
+    summary="List all generations for a selection, ordered newest first"
+)
+@router.get(
     "/selections/{selection_id}/test-cases",
     response_model=List[GenerationRecordResponse],
-    summary="Retrieve all generated test suites for a selection"
+    include_in_schema=False
 )
-def get_selection_test_cases(
+def get_selection_generations(
     selection_id: str,
     db: Session = Depends(get_db)
 ):
-    # Verify selection exists
     selection = db.query(Selection).filter(Selection.id == selection_id).first()
     if not selection:
         raise HTTPException(
@@ -752,9 +760,12 @@ def get_selection_test_cases(
 @router.get(
     "/generations/{generation_id}",
     response_model=GenerationRecordResponse,
-    summary="Retrieve an immutable test generation record by ID"
+    summary="Retrieve an immutable test generation record with current staleness assessment"
 )
-def get_generation_record(generation_id: str):
+def get_generation_record(
+    generation_id: str,
+    db: Session = Depends(get_db)
+):
     store = JSONTestStore()
     r = store.get_generation(generation_id)
     if not r:
@@ -762,6 +773,13 @@ def get_generation_record(generation_id: str):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Generation record '{generation_id}' not found."
         )
+
+    staleness_svc = StalenessService(store=store)
+    staleness_rep = None
+    try:
+        staleness_rep = staleness_svc.evaluate_generation(generation_id, db)
+    except Exception as e:
+        logger.warning(f"Could not compute staleness assessment for generation '{generation_id}': {e}")
 
     return GenerationRecordResponse(
         generation_id=r["generation_id"],
@@ -779,7 +797,54 @@ def get_generation_record(generation_id: str):
         total_test_cases=len(r.get("test_cases", [])),
         test_cases=[GeneratedTestCase(**tc) for tc in r.get("test_cases", [])],
         source_node_ids=r.get("source_node_ids", []),
-        source_text_snapshots=[SourceTextSnapshot(**s) for s in r.get("source_text_snapshots", [])]
+        source_text_snapshots=[SourceTextSnapshot(**s) for s in r.get("source_text_snapshots", [])],
+        staleness=staleness_rep
     )
+
+
+# ---------------------------------------------------------
+# 9. Staleness and Impact Analysis Endpoints
+# ---------------------------------------------------------
+
+@router.get(
+    "/generations/{generation_id}/staleness",
+    response_model=GenerationStalenessReport,
+    summary="Detailed staleness and impact assessment for a test generation"
+)
+def get_generation_staleness(
+    generation_id: str,
+    target_version: Optional[str] = Query(None, description="Optional target version number (defaults to latest)"),
+    db: Session = Depends(get_db)
+):
+    svc = StalenessService()
+    return svc.evaluate_generation(generation_id, db, target_version)
+
+
+@router.get(
+    "/selections/{selection_id}/staleness",
+    response_model=SelectionStalenessSummary,
+    summary="Aggregate staleness report for all successful generations in a selection"
+)
+def get_selection_staleness(
+    selection_id: str,
+    target_version: Optional[str] = Query(None, description="Optional target version number (defaults to latest)"),
+    db: Session = Depends(get_db)
+):
+    svc = StalenessService()
+    return svc.evaluate_selection(selection_id, db, target_version)
+
+
+@router.get(
+    "/nodes/{node_id}/test-cases",
+    response_model=List[NodeAssociatedTestCase],
+    summary="Retrieve generated QA test cases associated with a version-specific node ID"
+)
+def get_node_test_cases(
+    node_id: str,
+    db: Session = Depends(get_db)
+):
+    svc = StalenessService()
+    return svc.get_test_cases_for_node(node_id, db)
+
 
 

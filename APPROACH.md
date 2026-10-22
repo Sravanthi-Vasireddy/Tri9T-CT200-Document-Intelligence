@@ -447,6 +447,93 @@ Generations are stored in `generated/test_generations/gen_{generation_id}.json` 
 - Input hash, prompt version (`1.0.0`), and validation status.
 This enables subsequent tasks (e.g., test case staleness detection) to inspect both current and historical test definitions independently of database changes.
 
+---
+
+## 13. Staleness Detection, Impact Analysis & Test Traceability Architecture
+
+### 13.1 Comparison Algorithm & Architectural Integrity
+The staleness evaluation engine (`app/staleness.py`) assesses whether test cases synthesized from a historical document version remain valid against the latest (or target) ingested version of the document.
+
+The comparison lifecycle follows a strict pipeline:
+
+```mermaid
+graph TD
+    GenRecord["Historical Generation Record (gen_...json)<br/>- Exact Node IDs & Hashes<br/>- Source Text Snapshots<br/>- Pinned Document Version"] --> LoadTarget["Load Target Document Version<br/>(Defaults to Latest Ingested Version)"]
+    LoadTarget --> IterateNodes["For Each Source Node in Generation"]
+    IterateNodes --> QueryMatcher["Query Version Matcher via Logical Key"]
+    
+    QueryMatcher -->|0 matches| NodeRemoved["Status: REMOVED"]
+    QueryMatcher -->|>1 matches| NodeAmbiguous["Status: AMBIGUOUS"]
+    QueryMatcher -->|1 match & Target Hash == Source Hash| NodeUnchanged["Status: UNCHANGED"]
+    QueryMatcher -->|1 match & Target Hash != Source Hash| NodeModified["Status: MODIFIED<br/>Generate Diff & Run Impact Heuristics"]
+    
+    NodeRemoved --> MapTestCases["Map Node Statuses to Test Cases"]
+    NodeAmbiguous --> MapTestCases
+    NodeUnchanged --> MapTestCases
+    NodeModified --> MapTestCases
+    
+    MapTestCases --> EvalTestCase["Evaluate Each Test Case via Referenced Nodes"]
+    EvalTestCase --> AggSummary["Aggregate Generation-Level Counts<br/>(current, stale, review_required, unknown)"]
+```
+
+#### Comparison Rules:
+1. **Target Version Resolution**: The system retrieves the latest successfully ingested version of the same document (`document_id`). If no target version exists, all test cases are marked `unknown`.
+2. **Logical Node Matching**: Uses the exact database version-matching mechanism (`logical_node_key`). Matches must occur within the same target `document_id`.
+3. **Cardinality & Hash Comparison**:
+   - Zero matches $\rightarrow$ `removed`.
+   - Multiple matches $\rightarrow$ `ambiguous`.
+   - Single match with identical content hash $\rightarrow$ `unchanged`.
+   - Single match with divergent content hash $\rightarrow$ `modified`. Content text is reconstructed using `get_node_full_content()` (hierarchically assembling section body text and tabular row/column data) to generate unified diffs and evaluate impact heuristics.
+4. **Historical Snapshot Verification**: If historical source node snapshots or hashes are missing or corrupted in the generation record, the node is flagged `review_required` rather than fabricating or assuming unchanged status.
+
+### 13.2 Per-Test-Case Impact Assessment & Granular Statuses
+Rather than assigning a coarse, blanket status to an entire generation, each test case is evaluated independently against its own referenced source nodes (`tc.source_node_ids`).
+
+#### Status Precedence Order for Multi-Node Test Cases:
+When a test case references multiple source nodes, its status is synthesized deterministically:
+1. **`review_required`** has highest priority if any referenced node has an `ambiguous` match, missing snapshot metadata, or unresolvable status.
+2. **`stale`** is assigned if any referenced node is `modified` or `removed` (and no referenced node requires review).
+3. **`current`** is assigned if and only if **all** referenced source nodes are confidently matched and strictly `unchanged`.
+4. **`unknown`** is assigned if no target comparison document version exists.
+
+This granular policy ensures that:
+- In a generation with 3 test cases, if Section 1.1 is unchanged, its test case remains `current`.
+- If Section 3.2 changed from 40 mmHg to 30 mmHg, its test case becomes `stale`.
+- If a test references both Section 1.1 (unchanged) and Section 3.2 (modified), it is correctly designated `stale`.
+
+### 13.3 Handling of Uncertain & Ambiguous Matches
+A common risk in document intelligence is false confidence when document layouts undergo reorganizations:
+- **Ambiguous Matches**: When a logical key maps to multiple nodes in the target version (e.g., duplicated subsections or split requirements), guessing a match could lead to false `current` assertions. The engine refuses to guess, classifying the node as `ambiguous` and marking dependent test cases `review_required` with an explicit reason (`"Logical key '{logical_key}' matched {count} candidate nodes in target version."`).
+- **Removed Nodes**: When a logical key disappears entirely, it is flagged as `removed` and dependent test cases marked `stale` (`"Referenced node '{node_id}' was removed in target version."`).
+- **Missing Snapshot Metadata**: For legacy or incomplete generation records lacking `source_content_hashes`, the engine treats the state as unverified, marking dependent test cases `review_required`. It never hallucinates historical hashes or assumes stability.
+
+### 13.4 Hash Comparison versus Semantic Impact Heuristics
+The engine employs a hybrid two-tier approach to detect and summarize specification drift:
+
+1. **Content Hash Comparison (Exact Determinism)**:
+   - SHA-256 content hashes computed over canonicalized text provide a foolproof mathematical baseline. If hashes match, the node text is guaranteed identical byte-for-byte.
+   - If hashes diverge, staleness is guaranteed at the text level.
+2. **Rule-Based Impact Heuristics (Diff Analysis)**:
+   - Simply knowing a node changed does not tell the test engineer *what* changed or *how critical* the change is.
+   - The engine parses the unified diff line-by-line using regular expressions and domain vocabulary specifically tuned for technical and medical manuals:
+     - **Numeric Thresholds**: `\b\d+(?:\.\d+)?\b` changes (e.g. `40` to `30`, `300` to `250`, `2` to `1.5`).
+     - **Engineering & Medical Units**: `mmHg`, `bpm`, `seconds`, `%`, `°C`, `cycles`, `V`, `mA`.
+     - **Timing Limits**: Changes containing `seconds`, `min`, `ms`, `auto-deflate`, `timeout`.
+     - **Comparative Operators & Extremes**: `<`, `>`, `≤`, `≥`, `exceeds`, `below`, `minimum`, `maximum`, `limit`.
+     - **Safety Constraints & Negations**: `cannot`, `must not`, `never`, `danger`, `warning`, `caution`, `abort`, `alarm`.
+   - When detected, these lines are highlighted as **Potential High-Impact Changes** in the staleness report.
+   - **Crucial Ethical & Regulatory Boundary**: The engine explicitly labels these as *potential high-impact changes* and does **not** claim to establish automated clinical safety or regulatory efficacy without human engineering sign-off.
+
+### 13.5 Known Limitations & Edge Cases
+
+| Scenario | Behavior / Risk | Mitigation Strategy |
+|---|---|---|
+| **Cosmetic Wording Changes** | Minor typographical fixes or punctuation adjustments alter the SHA-256 hash, causing a test case to be flagged `stale` (False Positive). | The engine provides unified diff summaries so human engineers can instantly spot cosmetic edits vs specification changes. Automatic regeneration is deliberately forbidden. |
+| **Structural Section Relocation** | If a section is moved under a new parent heading and its section number is renumbered (e.g., `3.4` moved to `5.2`), its `logical_key` may diverge, appearing as a removal in Section 3 and an addition in Section 5. | Future extensions can incorporate fuzzy semantic embeddings or title-similarity matching to identify cross-section relocations while marking them `review_required` for human verification. |
+| **Tabular Format Alterations** | If a specification table is reordered or transposed, cell-by-cell comparisons will show diffs even if numerical values are preserved. | The engine serializes tables into canonical markdown pipe grids with headers to minimize formatting noise while preserving row-column associations. |
+| **Implicit Semantic Dependencies** | If an unreferenced introductory section alters a global assumption (e.g., defining "All measurements assume room temperature"), test cases referencing downstream operational sections without citing the intro will not be flagged `stale` (False Negative). | Engineers are encouraged to include cross-cutting scope nodes in named selections, or run selection-level staleness audits. |
+
+
 
 
 

@@ -524,9 +524,9 @@ curl -X POST "http://localhost:8000/api/selections/sel_a1b2c3d4e5f6/generate" \
 Retrieve historical test generation suites for a selection or by generation ID from the persistent document store:
 ```bash
 # List all test generation runs for a selection
-curl -X GET "http://localhost:8000/api/selections/sel_a1b2c3d4e5f6/test-cases"
+curl -X GET "http://localhost:8000/api/selections/sel_a1b2c3d4e5f6/generations"
 
-# Retrieve specific immutable generation record
+# Retrieve specific immutable generation record with embedded current staleness report
 curl -X GET "http://localhost:8000/api/generations/gen_f8c12a39d4e5"
 ```
 
@@ -539,17 +539,191 @@ curl -X GET "http://localhost:8000/api/generations/gen_f8c12a39d4e5"
 
 ---
 
-## 11. Automated Test Suite
+## 12. Staleness Detection, Impact Analysis & Test Case Retrieval
 
-The test suite consists of 43 comprehensive tests across parsing, database versioning, REST API, named selection, and LLM QA generation layers:
+When product requirements and technical manuals evolve across versions (e.g. from Version 1 to Version 2), previously generated test cases can become obsolete, inaccurate, or hazardous. The **Staleness Detection Engine** (`app/staleness.py`) analyzes persisted test generation records against target document versions, evaluating granular source-node changes and computing per-test-case staleness statuses without modifying or regenerating historical records.
+
+### Staleness Status Taxonomy
+
+| Status | Definition | Criteria |
+|---|---|---|
+| `current` | Up-to-date | All referenced source nodes are confidently matched in the latest version and their content hashes are identical. |
+| `stale` | Outdated specification | At least one referenced source node was modified or removed in the latest version. |
+| `review_required` | Ambiguous or incomplete | Source logical matching is ambiguous, required historical metadata is missing, or comparison cannot be performed reliably. |
+| `unknown` | Target version missing | No target document version exists in the database to compare against. |
+
+### High-Impact Specification Change Detection
+The staleness engine incorporates rule-based heuristics that analyze unified diffs to detect potential high-impact clinical/engineering changes:
+- **Numerical Thresholds & Values**: e.g., inflation increment changed from `40 mmHg` to `30 mmHg`, battery cycles reduced from `300` to `250`.
+- **Units of Measure**: `mmHg`, `bpm`, `seconds`, `%`, `°C`.
+- **Timing Limits**: Auto-deflation response time tightened from `2.0s` to `1.5s`.
+- **Inequalities & Comparisons**: `<`, `>`, `≤`, `≥`, `exceeds`, `below`, `minimum`, `maximum`.
+- **Negations & Safety Constraints**: `cannot`, `must not`, `never`, `warning`, `danger`, `abort`, `caution`.
+
+> **Note**: Highlighted changes are flagged as *potential high-impact specification changes* to alert QA engineers; the system does not claim to establish clinical safety significance automatically.
+
+### End-to-End V1-to-V2 Staleness Workflow
+
+Here is the complete end-to-end workflow demonstrating how V1 test cases are evaluated against V2:
+
+#### Step 1: Create a V1 Selection & Generate Test Cases
+Create a selection pinned to V1 nodes (Section 3.2 Cuff Inflation and Section 2.1.1.1 Battery Life) and generate QA test cases:
 ```bash
+# 1. Create selection pinned to V1
+curl -X POST "http://localhost:8000/api/selections" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "V1 Core Verification Suite",
+    "description": "Inflation sequence and battery specifications from V1 manual",
+    "items": [
+      {"node_id": "v1_sec_3_2"},
+      {"node_id": "v1_sec_2_1_1_1_p_5"}
+    ]
+  }'
+
+# 2. Generate QA test cases (returns generation_id, e.g. gen_e1a2b3c4d5f6)
+curl -X POST "http://localhost:8000/api/selections/sel_YOUR_ID/generate" \
+  -H "Content-Type: application/json" \
+  -d '{"force_regenerate": false}'
+```
+
+#### Step 2: Ingest Version 2 of the Manual
+When Version 2 (`data/ct200_manual_v2.pdf`) is ingested, the system populates V2 nodes without overwriting any V1 records or historical test cases:
+```bash
+python scripts/ingest_documents.py
+```
+
+#### Step 3: Check Generation Staleness Assessment
+Query the staleness endpoint for the generation to see which test cases became stale:
+```bash
+curl -X GET "http://localhost:8000/api/generations/gen_e1a2b3c4d5f6/staleness"
+```
+**Example Response**:
+```json
+{
+  "generation_id": "gen_e1a2b3c4d5f6",
+  "selection_id": "sel_YOUR_ID",
+  "source_version_number": "v1",
+  "target_version_number": "v2",
+  "evaluated_at": "2026-10-23T00:30:00",
+  "summary": {
+    "total_test_cases": 3,
+    "current": 1,
+    "stale": 2,
+    "review_required": 0,
+    "unknown": 0
+  },
+  "test_case_results": [
+    {
+      "test_case_id": "TC-CT200-BAT-001",
+      "title": "V1 Typical Battery Life and Low-Battery Threshold Verification",
+      "status": "stale",
+      "reason": "Referenced node v1_sec_2_1_1_1_p_5 was modified in target version v2 (content hash changed from fc240aa4... to 2ff1a8d0...).",
+      "referenced_node_ids": ["v1_sec_2_1_1_1_p_5"],
+      "impact_notes": [
+        "Potential high-impact change detected in node v1_sec_2_1_1_1_p_5: Numeric threshold/value change detected: - Battery life: under typical use (3 measurements per day), the device operates for approximately 300 measurement cycles. / + Battery life: under typical use (3 measurements per day), the device operates for approximately 250 measurement cycles.",
+        "Potential high-impact change detected in node v1_sec_2_1_1_1_p_5: Unit of measurement modified: - A low-battery indicator appears on the display when battery capacity drops below 15%. / + A low-battery indicator appears on the display when battery capacity drops below 10%."
+      ],
+      "diff_summaries": {
+        "v1_sec_2_1_1_1_p_5": "--- v1 (v1_sec_2_1_1_1_p_5)\n+++ v2 (v2_sec_2_1_1_1_p_5)\n@@ -1,4 +1,5 @@\n-Battery life: under typical use (3 measurements per day), the device operates for approximately 300 measurement cycles.\n-A low-battery indicator appears on the display when battery capacity drops below 15%.\n+Battery life: under typical use (3 measurements per day), the device operates for approximately 250 measurement cycles.\n+A low-battery indicator appears on the display when battery capacity drops below 10%.\n+Note: Battery life specifications were revised based on extended field testing under variable temperature conditions."
+      }
+    },
+    {
+      "test_case_id": "TC-CT200-INF-001",
+      "title": "Cuff Inflation Increment Step Verification",
+      "status": "stale",
+      "reason": "Referenced node v1_sec_3_2 was modified in target version v2 (content hash changed).",
+      "referenced_node_ids": ["v1_sec_3_2"],
+      "impact_notes": [
+        "Potential high-impact change detected in node v1_sec_3_2: Numeric threshold/value change detected: - The cuff inflates in 40 mmHg increments / + The cuff inflates in 30 mmHg increments"
+      ],
+      "diff_summaries": {
+        "v1_sec_3_2": "--- v1 (v1_sec_3_2)\n+++ v2 (v2_sec_3_2)\n@@ -1,5 +1,5 @@\n-3.2 Cuff Inflation Sequence\n-The cuff inflates in 40 mmHg increments...\n+3.2 Cuff Inflation Sequence\n+The cuff inflates in 30 mmHg increments..."
+      }
+    }
+  ],
+  "node_comparisons": [
+    {
+      "source_node_id": "v1_sec_2_1_1_1_p_5",
+      "target_node_id": "v2_sec_2_1_1_1_p_5",
+      "logical_key": "sec_2.1.1.1_p_5",
+      "status": "modified",
+      "source_hash": "fc240aa415f36e4f3a9e64e12ec6fe5ff9d10e5aa232a5ffbe365510619a32c2",
+      "target_hash": "2ff1a8d052a201b1e5fead848b1d9bf5be8447814b74542ee4ee0ee711149e32",
+      "has_diff": true,
+      "diff_summary": "--- v1\n+++ v2\n@@ ...",
+      "impact_notes": [
+        "Numeric threshold/value change detected: 300 -> 250 cycles",
+        "Unit/threshold modified: 15% -> 10%"
+      ]
+    }
+  ]
+}
+```
+
+#### Step 4: Aggregate Staleness for a Selection
+View aggregate staleness metrics across all generations for a selection:
+```bash
+curl -X GET "http://localhost:8000/api/selections/sel_YOUR_ID/staleness"
+```
+
+#### Step 5: Trace Test Cases Linked to a Specific Node
+Lookup all generated test cases originating from a specific node ID, along with their current staleness status:
+```bash
+curl -X GET "http://localhost:8000/api/nodes/v1_sec_2_1_1_1_p_5/test-cases"
+```
+**Example Response**:
+```json
+{
+  "node_id": "v1_sec_2_1_1_1_p_5",
+  "document_id": "ct200_manual",
+  "version_number": "v1",
+  "logical_key": "sec_2.1.1.1_p_5",
+  "total_test_cases": 1,
+  "test_cases": [
+    {
+      "test_case_id": "TC-CT200-BAT-001",
+      "title": "V1 Typical Battery Life and Low-Battery Threshold Verification",
+      "objective": "Verify that typical battery life delivers approximately 300 measurement cycles...",
+      "priority": "high",
+      "generation_id": "gen_e1a2b3c4d5f6",
+      "selection_id": "sel_YOUR_ID",
+      "source_version_number": "v1",
+      "staleness_status": "stale",
+      "staleness_reason": "Referenced node v1_sec_2_1_1_1_p_5 was modified in target version v2."
+    }
+  ]
+}
+```
+
+---
+
+## 13. Automated Test Suite
+
+The test suite consists of **53 comprehensive automated tests** across parsing, database versioning, REST API, named selections, LLM generation, and cross-version staleness evaluation:
+
+```bash
+# Run complete test suite
 pytest -v
 ```
 
-- **`tests/test_parser.py` (7 tests)**: Structural anomaly handling, non-sequential numbering (3.4 before 3.3), missing intermediate subsections (2.1.1.1), table column/row extraction, cross-page stitching, and tree validation.
+### Module Breakdown
+- **`tests/test_parser.py` (7 tests)**: Structural anomaly handling, non-sequential numbering (3.4 before 3.3), missing intermediate subsections (2.1.1.1), table column/row extraction, cross-page text stitching, and tree validation.
 - **`tests/test_database.py` (8 tests)**: V1/V2 ingestion, immutable preservation of V1, unchanged/modified node detection, added/removed nodes, hash deduplication, and transactional rollback.
 - **`tests/test_api.py` (10 tests)**: `/health` DB connectivity check, version listing, section listing with version defaults, exact versioned node retrieval, search across headings/body with type/version filters, cross-version change comparison, removed/ambiguous node handling, and input validation / edge cases.
 - **`tests/test_selections.py` (9 tests)**: Named selection creation/retrieval, exact version-pinned content resolution (V1 300 cycles vs V2 250 cycles), post-ingestion immutability (V2 ingestion preserves pre-existing V1 selection), 404 on unknown node IDs, 400 on empty selections/invalid names, duplicate node rejection, mixed-version rejection, transaction rollback, pagination, and 404 on missing selection IDs.
 - **`tests/test_generation.py` (9 tests)**: LLM test case generation from selection, strict version-pinned grounding (V1 300 cycles vs V2 250 cycles), duplicate generation caching (`cached=True`) vs `force_regenerate=True`, 404 on unknown selections, rejection of hallucinated source node IDs, rejection of out-of-bounds test case counts (<3 or >5), bounded single repair recovery on malformed output, safe 502 handling on repair exhaustion, and JSON document store auditability with immutable source text snapshots.
+- **`tests/test_staleness.py` (10 tests)**:
+  1. `test_unchanged_v1_section_reported_current_after_v2_ingestion`: Verifies unchanged sections (e.g. Section 1.1) evaluate to `current` with `diff_summary=None`.
+  2. `test_section_3_2_inflation_increment_change`: Verifies cuff inflation change from 40 mmHg to 30 mmHg triggers `stale` with high-impact numeric change detected.
+  3. `test_battery_requirement_detected_changes`: Verifies battery specification change from 300 to 250 cycles and 15% to 10% triggers `stale` with unit/threshold detection.
+  4. `test_e3_auto_deflation_requirement_detected_changes`: Verifies E3 table change from 2.0s to 1.5s is detected as `stale` with timing limit alert.
+  5. `test_removed_and_ambiguous_source_nodes_not_marked_current`: Verifies deleted nodes are flagged `stale` and ambiguous multi-matches flagged `review_required`.
+  6. `test_mixed_granularity_one_stale_one_current`: Proves per-test-case granularity where one test is `current` while another in the same generation is `stale`.
+  7. `test_multi_node_reference_combined_status`: Proves combined status logic across multiple nodes (unchanged + modified = stale; unchanged + ambiguous = review_required).
+  8. `test_missing_historical_metadata_produces_review_required`: Ensures corrupted or incomplete historical snapshots produce `review_required` rather than false `current`.
+  9. `test_staleness_retrieval_endpoints`: Validates `/api/selections/{id}/generations`, `/api/generations/{id}`, `/api/generations/{id}/staleness`, `/api/selections/{id}/staleness`, and `/api/nodes/{id}/test-cases`.
+  10. `test_deterministic_repeated_assessments`: Confirms multiple consecutive staleness requests return identical, deterministic results without mutating data.
+
 
 
