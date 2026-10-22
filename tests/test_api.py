@@ -227,3 +227,32 @@ def test_invalid_parameters_and_edge_cases(api_client):
     # Unknown source node ID in comparison
     resp_bad_source = api_client.get("/api/nodes/unknown_node_xyz/changes")
     assert resp_bad_source.status_code == 404
+
+
+def test_custom_swagger_ui_and_openapi(api_client):
+    """Test 11: Validates that custom-themed Swagger UI and OpenAPI schemas load successfully."""
+    # 1. /docs endpoint returns 200 HTML with custom styling injected
+    docs_resp = api_client.get("/docs")
+    assert docs_resp.status_code == 200
+    assert "text/html" in docs_resp.headers.get("content-type", "")
+    assert "Tri9T-CT200 Document Intelligence — Custom Swagger Theme" in docs_resp.text
+    assert "Tri9T-CT200-Document-Intelligence API - Swagger Documentation" in docs_resp.text
+    assert "/openapi.json" in docs_resp.text
+
+    # 2. /openapi.json returns valid JSON OpenAPI specification
+    openapi_resp = api_client.get("/openapi.json")
+    assert openapi_resp.status_code == 200
+    assert "application/json" in openapi_resp.headers.get("content-type", "")
+    schema = openapi_resp.json()
+    assert "openapi" in schema
+    assert "info" in schema
+    assert schema["info"]["title"] == "Tri9T-CT200-Document-Intelligence API"
+    assert "/health" in schema["paths"]
+    assert "/api/documents/{document_id}/versions" in schema["paths"]
+
+    # 3. Custom CSS endpoint returns 200 with text/css
+    css_resp = api_client.get("/static/swagger-custom.css")
+    assert css_resp.status_code == 200
+    assert "text/css" in css_resp.headers.get("content-type", "")
+    assert ".swagger-ui" in css_resp.text
+

@@ -11,6 +11,8 @@ env/
 ENV/
 env.bak/
 venv.bak/
+node_modules/
+dist/
 
 # Testing and coverage
 .pytest_cache/

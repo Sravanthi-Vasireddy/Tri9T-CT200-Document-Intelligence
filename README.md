@@ -725,5 +725,62 @@ pytest -v
   9. `test_staleness_retrieval_endpoints`: Validates `/api/selections/{id}/generations`, `/api/generations/{id}`, `/api/generations/{id}/staleness`, `/api/selections/{id}/staleness`, and `/api/nodes/{id}/test-cases`.
   10. `test_deterministic_repeated_assessments`: Confirms multiple consecutive staleness requests return identical, deterministic results without mutating data.
 
+---
+
+## 14. Frontend Application (React + Vite + TypeScript + Tailwind CSS)
+
+The project includes an enterprise document-intelligence dashboard located in `frontend/`.
+
+### Tech Stack
+- **Framework**: React 19 + Vite
+- **Language**: TypeScript
+- **Styling**: Tailwind CSS v3
+- **Icons**: Lucide React
+- **Architecture**: Modular layout with persistent sidebar, typed API client, and live backend connection badge
+
+### Frontend Setup & Running Instructions
+
+#### Prerequisites
+- Node.js v18 or higher (tested on Node v22)
+- npm v9 or higher
+
+#### 1. Navigate to the Frontend Directory
+```bash
+cd frontend
+```
+
+#### 2. Install Frontend Dependencies
+```bash
+npm install
+```
+
+#### 3. Configure Backend Base URL (Optional)
+By default, the frontend automatically connects to `http://127.0.0.1:8000`. To customize the target backend, create or edit `frontend/.env`:
+```bash
+VITE_API_BASE_URL=http://127.0.0.1:8000
+```
+
+#### 4. Start the Development Server
+```bash
+npm run dev
+```
+Open **[http://localhost:5173](http://localhost:5173)** in your browser.
+
+#### 5. Build for Production
+To validate and compile the production bundle:
+```bash
+npm run build
+```
+*(Artifacts compile cleanly to `frontend/dist/` in ~2 seconds).*
+
+### Dashboard Features
+- **Live Backend Connection Banner**: Real-time health probe confirming SQLite and FastAPI status.
+- **Enterprise Stat Cards**: Document version counts, extracted node hierarchy stats (102 nodes), active selections, and staleness engine status.
+- **Dual Version Inspection**: Side-by-side metadata for Version 1 and Version 2 with SHA-256 file hashes.
+- **Specification Drift Matrix**: Visual table highlighting critical requirements differences (cuff increment 40 $\rightarrow$ 30 mmHg, battery 300 $\rightarrow$ 250 cycles, E3 response 2.0s $\rightarrow$ 1.5s, E6 Bluetooth error addition, and Section 5.3 Data Export addition).
+- **Document Sections Hierarchy**: Live list of top-level sections with reading order and content hashes.
+- **Developer Quicklinks**: Direct link to the backend's interactive Swagger UI documentation at `http://127.0.0.1:8000/docs`.
+
+
 
 
