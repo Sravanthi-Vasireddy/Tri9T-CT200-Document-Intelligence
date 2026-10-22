@@ -20,7 +20,8 @@ class JSONTestStore:
         self.store_dir.mkdir(parents=True, exist_ok=True)
 
     def _file_path(self, generation_id: str) -> Path:
-        return self.store_dir / f"gen_{generation_id}.json"
+        filename = f"{generation_id}.json" if generation_id.startswith("gen_") else f"gen_{generation_id}.json"
+        return self.store_dir / filename
 
     def save_generation(self, record: Dict[str, Any]) -> str:
         """Persists a generation record as an immutable JSON document."""
@@ -35,7 +36,11 @@ class JSONTestStore:
         """Retrieves a generation record by its unique ID."""
         path = self._file_path(generation_id)
         if not path.exists():
-            return None
+            alt = self.store_dir / f"gen_{generation_id}.json"
+            if alt.exists():
+                path = alt
+            else:
+                return None
         try:
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)

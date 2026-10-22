@@ -533,6 +533,34 @@ The engine employs a hybrid two-tier approach to detect and summarize specificat
 | **Tabular Format Alterations** | If a specification table is reordered or transposed, cell-by-cell comparisons will show diffs even if numerical values are preserved. | The engine serializes tables into canonical markdown pipe grids with headers to minimize formatting noise while preserving row-column associations. |
 | **Implicit Semantic Dependencies** | If an unreferenced introductory section alters a global assumption (e.g., defining "All measurements assume room temperature"), test cases referencing downstream operational sections without citing the intro will not be flagged `stale` (False Negative). | Engineers are encouraged to include cross-cutting scope nodes in named selections, or run selection-level staleness audits. |
 
+---
+
+## 14. Engineering Decision Log & Critical System Reflections
+
+### Question 1: What is most likely to silently give wrong results, and how would you detect it?
+- **Root Risk: Implicit Cross-Cutting Semantic Dependencies**:
+  When an overarching specification or ambient condition defined in an introductory section changes (for example, if Section 1.1 or 2.1 were to alter standard testing atmospheric pressure, operating ambient conditions from `+10°C to +40°C`, or the definition of "typical use" across the device), test cases generated from downstream operational sections (such as Section 3.2 or Section 3.4) that cite only their immediate leaf node IDs (`v1_sec_3_2`) in `source_node_ids` will not detect that the global operational baseline has shifted.
+  Because the downstream node's own content hash remains identical, the staleness engine will calculate that all referenced leaf nodes are unchanged and report the test case as `current`, creating a silent false negative.
+- **Detection & Mitigation Mechanism**:
+  1. **Selection-Level Ancestor Auditing**: The system checks whether parent sections or document root nodes have modified hashes even when child leaves are unchanged, appending informational context alerts to selection-level reports.
+  2. **Audit Warnings for Isolated Nodes**: When a user creates a named selection containing isolated paragraphs without including their parent section heading or global specification scope, the API emits a diagnostic note encouraging comprehensive scope selection.
+  3. **Future Extension**: Construct an explicit Directed Acyclic Graph (DAG) of requirement prerequisites, ensuring that upstream changes to global environmental or device specifications automatically cascade staleness flags to dependent operational test suites.
+
+### Question 2: Where did you choose simplicity over correctness, and what would fail first in production?
+- **Simplicity Decision: Canonical Section-Number Prefixing for Logical Node Identity**:
+  In our versioning implementation, logical identities are derived directly from canonical section numbers (e.g., `sec_3.2`, `sec_2.1.1.1_p_5`). For technical manuals where section numbering is stable (like the CT-200), this provides simple, deterministic, fast $O(1)$ dictionary lookups without non-deterministic fuzzy clustering or vector index overhead.
+- **What Fails First in Production**:
+  In an active medical device production environment with frequent major manual revisions, if a technical author restructures the manual by renumbering or splitting sections (e.g., renumbering Section 3.4 "Auto Shutoff" to Section 4.1, or reorganizing Chapter 2 into separate hardware and software chapters), our strict logical key matcher treats the old key as `removed` (rendering existing test cases `stale`) and the renumbered section as newly `added`.
+  While the system fails safely (flagging the change for human review rather than falsely asserting `current`), it creates unnecessary false-positive `stale` churn because it cannot automatically recognize that the requirement text merely relocated to a new section number.
+- **Production Solution**: Combine hierarchical key matching with a semantic embedding similarity fallback (e.g., sentence-transformer embeddings with cosine threshold $\ge 0.92$ and Hungarian bipartite matching) to detect relocated sections and offer suggested re-mappings under `review_required`.
+
+### Question 3: Name one input you did not handle and explain how the system responds to it.
+- **Unhandled Input: Complex Merged-Cell PDF Tables with Asymmetrical Grids**:
+  While the system natively and accurately parses multi-line cells and rectangular tabular grids (such as the 8×2 General Specifications and 3×5/3×6 Error Codes tables in the CT-200 manual), it does not reconstruct complex merged-cell tables (e.g., cells that span multiple rows and columns simultaneously with asymmetrical header hierarchies).
+- **How the System Responds**:
+  If an arbitrary PDF containing horizontally and vertically merged cells is ingested, PyMuPDF's underlying `find_tables()` engine splits the merged bounding boxes into individual sub-rectangles or duplicates the merged text string across multiple adjacent cells. The parser safely captures the text into `table_data["rows"]` and `table_data["headers"]` without raising unhandled exceptions or crashing the ingestion transaction. The content hash is computed over the resulting normalized table text, ensuring deterministic change tracking. However, the structural row-column alignment loses the multi-row span semantics, and generated QA test cases for those specific spanned cells would require human engineering inspection to verify column header associations.
+
+
 
 
 
