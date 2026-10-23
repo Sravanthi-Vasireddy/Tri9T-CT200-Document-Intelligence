@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: tri9t-ct200-document-intelligence
+    runtime: python
+    plan: free
+    healthCheckPath: /health
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.11
+      - key: ALLOWED_ORIGINS
+        value: https://tri9t-ct-200-document-intelligence.vercel.app
+      - key: AUTO_SEED_DOCUMENTS
+        value: "true"
+      - key: DATABASE_URL
+        value: sqlite:///./tri9t_doc_intel.db
+      - key: LLM_PROVIDER
+        value: mock

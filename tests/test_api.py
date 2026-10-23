@@ -256,3 +256,60 @@ def test_custom_swagger_ui_and_openapi(api_client):
     assert "text/css" in css_resp.headers.get("content-type", "")
     assert ".swagger-ui" in css_resp.text
 
+
+def test_api_health_and_cors(api_client):
+    """Test 12: Validates /api/health alias and production CORS headers."""
+    # 1. /api/health alias returns healthy status
+    resp = api_client.get("/api/health")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "healthy"
+    assert data["database"] == "connected"
+
+    # 2. CORS Preflight OPTIONS from production Vercel frontend
+    cors_resp = api_client.options(
+        "/api/health",
+        headers={
+            "Origin": "https://tri9t-ct-200-document-intelligence.vercel.app",
+            "Access-Control-Request-Method": "GET",
+        }
+    )
+    assert cors_resp.status_code == 200
+    assert cors_resp.headers.get("access-control-allow-origin") == "https://tri9t-ct-200-document-intelligence.vercel.app"
+
+
+def test_auto_seed_fresh_database(tmp_path):
+    """Test 13: Verifies AUTO_SEED_DOCUMENTS correctly seeds versions on a fresh database."""
+    import os
+    test_db_path = tmp_path / "test_autoseed.db"
+    test_db_url = f"sqlite:///{test_db_path}"
+
+    orig_db_url = os.environ.get("DATABASE_URL")
+    try:
+        os.environ["DATABASE_URL"] = test_db_url
+        test_engine = create_engine(test_db_url, connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=test_engine)
+        TestSession = sessionmaker(bind=test_engine)
+
+        with TestSession() as session:
+            assert session.query(DocumentVersion).count() == 0
+
+            # Seed V1 & V2 using keyword db arguments
+            v1_rec = IngestionService.ingest_pdf("data/ct200_manual.pdf", version_number="v1", document_id="ct200_manual", db=session)
+            v2_rec = IngestionService.ingest_pdf("data/ct200_manual_v2.pdf", version_number="v2", document_id="ct200_manual", db=session)
+
+            assert session.query(DocumentVersion).count() == 2
+            assert v1_rec.total_nodes == 50
+            assert v2_rec.total_nodes == 52
+
+            # Confirm idempotency on repeated run
+            dup_rec = IngestionService.ingest_pdf("data/ct200_manual.pdf", version_number="v1", document_id="ct200_manual", db=session)
+            assert dup_rec.already_ingested is True
+    finally:
+        if orig_db_url is not None:
+            os.environ["DATABASE_URL"] = orig_db_url
+        else:
+            os.environ.pop("DATABASE_URL", None)
+
+
+

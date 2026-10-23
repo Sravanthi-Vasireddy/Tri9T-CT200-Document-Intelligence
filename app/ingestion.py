@@ -42,6 +42,33 @@ class IngestionService:
         if not os.path.exists(pdf_path):
             raise FileNotFoundError(f"PDF file does not exist: {pdf_path}")
 
+        close_session = False
+        if db is None:
+            from app.database import SessionLocal
+            db = SessionLocal()
+            close_session = True
+
+        try:
+            return cls._ingest_pdf_internal(
+                pdf_path=pdf_path,
+                version_number=version_number,
+                document_id=document_id,
+                document_name=document_name,
+                db=db
+            )
+        finally:
+            if close_session:
+                db.close()
+
+    @classmethod
+    def _ingest_pdf_internal(
+        cls,
+        pdf_path: str,
+        version_number: str,
+        document_id: str,
+        document_name: str,
+        db: Session
+    ) -> IngestionSummary:
         file_hash = cls.calculate_file_hash(pdf_path)
         source_filename = os.path.basename(pdf_path)
         version_id = f"{document_id}_{version_number}"

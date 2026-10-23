@@ -76,12 +76,22 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
               <div>
                 <h3 className="text-sm font-bold text-rose-900">Backend Server Disconnected</h3>
                 <p className="text-xs text-rose-700 mt-1 leading-relaxed">
-                  Could not reach the FastAPI backend at <code className="font-mono bg-rose-100 px-1.5 py-0.5 rounded">{API_BASE_URL}</code>.
-                  Ensure the backend is running with:
+                  Could not reach the FastAPI backend at <code className="font-mono bg-rose-100 px-1.5 py-0.5 rounded">{API_BASE_URL || (import.meta.env.PROD ? '[Unconfigured API URL]' : 'http://127.0.0.1:8000')}</code>.
+                  {import.meta.env.PROD ? (
+                    <span className="block mt-1.5 text-rose-800">
+                      If viewing on Vercel, configure the <strong>VITE_API_BASE_URL</strong> environment variable in your Vercel Project Settings pointing to your live FastAPI backend service URL (e.g. on Render), then redeploy.
+                    </span>
+                  ) : (
+                    <span className="block mt-1">
+                      Ensure your local backend server is running with:
+                    </span>
+                  )}
                 </p>
-                <pre className="mt-2 text-xs font-mono bg-rose-100/70 p-2 rounded border border-rose-200 text-rose-900">
-                  uvicorn app.main:app --reload --port 8000
-                </pre>
+                {!import.meta.env.PROD && (
+                  <pre className="mt-2 text-xs font-mono bg-rose-100/70 p-2 rounded border border-rose-200 text-rose-900">
+                    uvicorn app.main:app --reload --port 8000
+                  </pre>
+                )}
               </div>
             </div>
             <button

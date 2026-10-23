@@ -1,4 +1,6 @@
+import os
 import logging
+from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, status, Request
 from fastapi.responses import JSONResponse, HTMLResponse, Response
@@ -21,6 +23,80 @@ async def lifespan(app: FastAPI):
     # Initialize DB schema on application startup
     try:
         init_db()
+        # Auto-seed CT-200 documents if running on a fresh/ephemeral database
+        should_seed = os.getenv("AUTO_SEED_DOCUMENTS", "true").lower() in ("true", "1", "yes")
+        if should_seed:
+            from app.database import SessionLocal
+            from app.models import DocumentVersion, Selection, SelectionItem, DocumentNodeModel
+            with SessionLocal() as db:
+                if db.query(DocumentVersion).count() == 0:
+                    logger.info("Fresh database detected. Auto-ingesting CT-200 manuals (V1 and V2)...")
+                    from app.ingestion import IngestionService
+                    data_dir = Path(__file__).resolve().parent.parent / "data"
+                    v1_pdf = data_dir / "ct200_manual.pdf"
+                    v2_pdf = data_dir / "ct200_manual_v2.pdf"
+                    if v1_pdf.exists():
+                        IngestionService.ingest_pdf(str(v1_pdf), version_number="v1", document_id="ct200_manual", db=db)
+                    if v2_pdf.exists():
+                        IngestionService.ingest_pdf(str(v2_pdf), version_number="v2", document_id="ct200_manual", db=db)
+                    logger.info("Auto-ingestion of CT-200 manuals completed successfully.")
+
+                if db.query(Selection).count() == 0:
+                    logger.info("Auto-seeding default CT-200 Core Baseline Requirements selection...")
+                    target_node_ids = [
+                        "v1_sec_1_1",
+                        "v1_sec_3_2",
+                        "v1_sec_2_1_1_1_p_5",
+                        "v1_sec_4_2_tbl_2",
+                    ]
+                    v1_nodes = (
+                        db.query(DocumentNodeModel)
+                        .filter(
+                            DocumentNodeModel.version_id == "ct200_manual_v1",
+                            DocumentNodeModel.id.in_(target_node_ids)
+                        )
+                        .all()
+                    )
+                    if v1_nodes:
+                        node_map = {n.id: n for n in v1_nodes}
+                        ordered_nodes = [node_map[nid] for nid in target_node_ids if nid in node_map]
+                        sel = Selection(
+                            id="sel_ct200_baseline_suite",
+                            name="CT-200 Core Baseline Requirements",
+                            description="Comprehensive verification suite covering intended use, inflation, battery specifications, and error handling.",
+                            document_id="ct200_manual",
+                            version_id="ct200_manual_v1",
+                            version_number="v1"
+                        )
+                        db.add(sel)
+                        db.flush()
+                        for idx, n in enumerate(ordered_nodes):
+                            item = SelectionItem(
+                                selection_id=sel.id,
+                                node_id=n.id,
+                                version_id=n.version_id,
+                                logical_key=n.logical_key,
+                                content_hash=n.content_hash,
+                                order_index=idx
+                            )
+                            db.add(item)
+                        db.commit()
+                        logger.info(f"Default selection '{sel.id}' seeded successfully with {len(ordered_nodes)} nodes.")
+
+                        try:
+                            from app.llm.generator import QATestGeneratorService
+                            from app.llm.store import JSONTestStore
+                            store = JSONTestStore()
+                            generator = QATestGeneratorService(store=store)
+                            generator.generate_for_selection(
+                                selection_id=sel.id,
+                                db=db,
+                                force_regenerate=False,
+                                additional_instructions="Standard CT-200 baseline test suite verification"
+                            )
+                            logger.info("Default QA test cases pre-seeded successfully.")
+                        except Exception as gen_err:
+                            logger.warning(f"Could not pre-seed default QA test cases: {gen_err}")
     except Exception as e:
         logger.error(f"Database initialization error on startup: {e}")
     yield
@@ -34,10 +110,26 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Enable CORS for frontend / external integration
+# Configure Allowed CORS Origins
+default_origins = [
+    "https://tri9t-ct-200-document-intelligence.vercel.app",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+env_origins = os.getenv("ALLOWED_ORIGINS", "")
+if env_origins:
+    custom_origins = [o.strip() for o in env_origins.split(",") if o.strip()]
+    allowed_origins = list(set(default_origins + custom_origins))
+else:
+    allowed_origins = default_origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
+    allow_origin_regex=r"https:\/\/tri9t-ct-200-document-intelligence.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -85,6 +177,17 @@ def health_check(db: Session = Depends(get_db)):
     )
 
 
+@app.get(
+    "/api/health",
+    response_model=HealthResponse,
+    tags=["System"],
+    summary="Health check endpoint alias under /api prefix"
+)
+def api_health_check(db: Session = Depends(get_db)):
+    """Convenience alias for /health under the /api prefix."""
+    return health_check(db)
+
+
 # Include API Routers
 app.include_router(api_router)
 
@@ -128,4 +231,10 @@ async def swagger_custom_css():
 async def swagger_ui_redirect():
     """OAuth2 redirect helper for Swagger UI."""
     return get_swagger_ui_oauth2_redirect_html()
+
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run("app.main:app", host="0.0.0.0", port=port, reload=False)
 

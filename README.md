@@ -781,6 +781,59 @@ npm run build
 - **Document Sections Hierarchy**: Live list of top-level sections with reading order and content hashes.
 - **Developer Quicklinks**: Direct link to the backend's interactive Swagger UI documentation at `http://127.0.0.1:8000/docs`.
 
+---
+
+## 15. Production Deployment Guide
+
+### Architecture Overview
+- **Frontend**: Deployed on **Vercel** (`https://tri9t-ct-200-document-intelligence.vercel.app`)
+- **Backend**: FastAPI Web Service deployed on **Render** (or Railway / Fly.io)
+
+### 1. Backend Deployment on Render (Recommended)
+
+1. **Create Web Service**:
+   - Log in to [Render Dashboard](https://dashboard.render.com).
+   - Click **New +** $\rightarrow$ **Web Service**.
+   - Connect your GitHub repository: `https://github.com/Sravanthi-Vasireddy/Tri9T-CT200-Document-Intelligence`.
+2. **Configure Settings**:
+   - **Environment**: `Python 3`
+   - **Region**: Closest to your users (e.g., Oregon / Frankfurt / Singapore)
+   - **Branch**: `master`
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+3. **Configure Environment Variables**:
+   In the Render dashboard under **Environment**, add:
+   | Key | Value | Purpose |
+   |---|---|---|
+   | `ALLOWED_ORIGINS` | `https://tri9t-ct-200-document-intelligence.vercel.app` | Authorizes your Vercel frontend |
+   | `AUTO_SEED_DOCUMENTS` | `true` | Automatically ingests CT-200 V1 & V2 PDFs if fresh container boots |
+   | `DATABASE_URL` | `sqlite:///./tri9t_doc_intel.db` | Default SQLite path (or your external PostgreSQL connection string) |
+   | `JSON_STORE_DIR` | `./generated` | Directory for generated QA test case JSONs |
+   | `LLM_PROVIDER` | `mock` (or `openai`) | Provider for QA test generation |
+   | `LLM_API_KEY` | *(your key if using openai)* | Optional API key |
+4. **Deploy**:
+   - Click **Create Web Service**. Once deployed, Render will assign a public HTTPS URL:
+     `https://tri9t-ct200-document-intelligence.onrender.com`
+   - Verify health: Visit `https://your-backend.onrender.com/health` (should return `{"status": "healthy", "database": "connected"}`).
+
+> [!NOTE]
+> **Free-Tier Storage & Spin-Down Behavior**:
+> - Free Render instances spin down after 15 minutes of inactivity and take ~30–45s to wake on the next incoming request.
+> - On free tier, the container disk is ephemeral. Thanks to the built-in `AUTO_SEED_DOCUMENTS=true` lifecycle handler, the backend automatically seeds V1 and V2 documents and rebuilds hierarchy trees whenever an instance boots, ensuring the API is always self-healing and operational.
+
+---
+
+### 2. Frontend Configuration on Vercel
+
+1. Open your project on the [Vercel Dashboard](https://vercel.com).
+2. Go to **Settings** $\rightarrow$ **Environment Variables**.
+3. Add the following variable:
+   - **Name**: `VITE_API_BASE_URL`
+   - **Value**: `https://your-backend-api.onrender.com` (replace with your actual Render URL, without trailing slash)
+4. Go to **Deployments**, click the three dots on your latest deployment, and click **Redeploy** (ensure "Clear build cache" is checked) so Vite bakes the new URL into the build bundle.
+5. Open `https://tri9t-ct-200-document-intelligence.vercel.app` — the connection indicator will display **Live API** in green!
+
+
 
 
 
